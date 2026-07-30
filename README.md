@@ -1,139 +1,141 @@
-**English | [简体中文](README_cn.md)**
-<div id="top"></div>
+# OpenGPU
 
-[![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![License][license-shield]][license-url]
+OpenGPU 是一个用于验证参数化 SIMT GPU 核心的轻量工程。它提供独立维护的
+Chisel、SpinalHDL 与 SystemVerilog RTL 后端，以及同一套 Native Runtime、
+RV32E kernel ABI、PMEM、Verilator 和 C ISS DiffTest 链路。
 
+## 快速开始
 
-<!-- PROJECT LOGO -->
-<br />
-<div align="center">
-    <a href="https://github.com/MoonGrt/MoonCore-GPU">
-    <img src="Document/images/logo.png" alt="Logo" width="80" height="80">
-    </a>
-<h3 align="center">MoonCore-GPU</h3>
-    <p align="center">
-    project_description
-    <br />
-    <a href="https://github.com/MoonGrt/MoonCore-GPU"><strong>Explore the docs »</strong></a>
-    <br />
-    <a href="https://github.com/MoonGrt/MoonCore-GPU">View Demo</a>
-    ·
-    <a href="https://github.com/MoonGrt/MoonCore-GPU/issues">Report Bug</a>
-    ·
-    <a href="https://github.com/MoonGrt/MoonCore-GPU/issues">Request Feature</a>
-    </p>
-</div>
+先检查工具链：
 
-
-
-
-<!-- CONTENTS -->
-<details open>
-  <summary>Contents</summary>
-  <ol>
-    <li><a href="#file-tree">File Tree</a></li>
-    <li>
-      <a href="#about-the-project">About The Project</a>
-      <ul>
-      </ul>
-    </li>
-    <li><a href="#contributing">Contributing</a></li>
-    <li><a href="#license">License</a></li>
-    <li><a href="#contact">Contact</a></li>
-    <li><a href="#acknowledgments">Acknowledgments</a></li>
-  </ol>
-</details>
-
-
-
-
-
-<!-- FILE TREE -->
-## File Tree
-
-```
-└─ Project
-  └─ README.md
-
+```sh
+scripts/setup.sh check
 ```
 
+选择一个后端并运行默认测试 `vecadd`：
 
+```sh
+make gpu_verilog_defconfig
+make run
+```
 
-<!-- ABOUT THE PROJECT -->
-## About The Project
+成功时会出现：
 
-<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">[![Product Name Screen Shot][product-screenshot]](https://example.com) Here's a blank template to get started: To avoid retyping too much info. Do a search and replace with your text editor for the following: `github_username`, `repo_name`, `twitter_handle`, `linkedin_username`, `email_client`, `email`, `project_title`, `project_description`</p></body></html>
-<p align="right">(<a href="#top">top</a>)</p>
+```text
+[DIFF] C ISS and Core RTL PMEM match
+[HOST] vecadd n=35: PASS
+```
 
+运行其他测试：
 
+```sh
+make run TEST=vecsub
+make run TEST=divergence
+make run TEST=topology
+```
 
-<!-- CONTRIBUTING -->
-## Contributing
+可用测试位于 `tests/`：`vecadd`、`vecsub`、`bitxor`、`sizes`、`topology`
+和 `divergence`。
 
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+## 选择后端
 
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
-Don't forget to give the project a star! Thanks again!
+| 后端 | 配置命令 | Scala 构建器 |
+| --- | --- | --- |
+| SystemVerilog | `make gpu_verilog_defconfig` | 不需要 |
+| Chisel | `make gpu_chisel_defconfig` | `TOOL=mill` 或 `TOOL=sbt` |
+| SpinalHDL | `make gpu_spinal_defconfig` | `TOOL=mill` 或 `TOOL=sbt` |
+| C ISS | `make gpu_sm_defconfig` | 不需要 |
 
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-<p align="right">(<a href="#top">top</a>)</p>
+例如：
 
+```sh
+make gpu_chisel_defconfig
+make TOOL=mill run
 
+make gpu_spinal_defconfig
+make TOOL=sbt run
+```
 
-<!-- LICENSE -->
-## License
+`gpu_hm_defconfig` 保留为 Chisel RTL 的兼容别名。也可不修改 `.config`
+临时选择硬件后端：
 
-Distributed under the MIT License. See `LICENSE` for more information.
-<p align="right">(<a href="#top">top</a>)</p>
+```sh
+make BACKEND=spinal TOOL=mill rtl
+make BACKEND=verilog verilate
+```
 
+通过菜单配置后端、构建器和 core/warp/thread 拓扑：
 
+```sh
+make menuconfig
+```
 
-<!-- CONTACT -->
-## Contact
+## 构建入口
 
-MoonGrt - 1561145394@qq.com
-Project Link: [MoonGrt/MoonCore-GPU](https://github.com/MoonGrt/MoonCore-GPU)
+根目录 Makefile 负责配置、编排和测试：
 
-<p align="right">(<a href="#top">top</a>)</p>
+```sh
+make build                 # 构建 Runtime
+make rtl                   # 生成选定后端的 RTL
+make verilate              # 构建 Verilator 静态库
+make run TEST=vecadd       # 构建并运行一个 kernel 测试
+make wave TEST=vecadd      # 先运行测试，再用 GTKWAVE 打开波形
+make clean-all             # 移除全部构建产物
+```
 
+子目录入口可在开发时单独使用：
 
+```sh
+make -C hw BACKEND=verilog verilate
+make -C sw BACKEND=verilog runtime
+make -C tests/vecadd run
+```
 
-<!-- ACKNOWLEDGMENTS -->
-## Acknowledgments
+## 目录结构
 
-Use this space to list resources you find helpful and would like to give credit to. I've included a few of my favorites to kick things off!
+```text
+hw/                         三套独立 RTL 后端
+  chisel/                   Chisel 源码、build.mill、build.sbt
+  spinal/                   SpinalHDL 源码、build.mill、build.sbt
+  verilog/                  SystemVerilog 源码与 DPI 模块
+  build/                    RTL、Verilator 和波形构建产物
+sw/                         软件与 kernel 支持
+  include/                  对 Host 测试公开的 Runtime API
+  launcher.cpp              Native 前端统一启动包装器
+  runtime/                  Runtime、C ISS、设备内存与 RTL launcher
+  kernel/                   RV32E GPU kernel ABI、启动代码和链接脚本
+  build/                    Runtime 静态库与对象文件
+tests/                      kernel 程序及各自的 Host 验证器
+tools/                      Kconfig 与依赖追踪工具
+configs/                    可复现的 defconfig
+source/                     OpenPeriph、Vortex、YSYX 等参考工程
+```
 
-* [Choose an Open Source License](https://choosealicense.com)
-* [GitHub Emoji Cheat Sheet](https://www.webpagefx.com/tools/emoji-cheat-sheet)
-* [Malven's Flexbox Cheatsheet](https://flexbox.malven.co/)
-* [Malven's Grid Cheatsheet](https://grid.malven.co/)
-* [Img Shields](https://shields.io)
-* [GitHub Pages](https://pages.github.com)
-* [Font Awesome](https://fontawesome.com)
-* [React Icons](https://react-icons.github.io/react-icons/search)
-<p align="right">(<a href="#top">top</a>)</p>
+`hw/build/`、`sw/build/` 和各测试目录的 `build/` 均为可删除的生成物。
 
+## Runtime 与 kernel ABI
 
+公开 Host API 在 [sw/include/runtime.h](sw/include/runtime.h)，前缀统一为
+`gpu_`，涵盖设备打开/关闭、内存分配与读写、kernel 加载、launch 和 wait。
 
+kernel 侧 ABI 位于 [sw/kernel/include/gpu.h](sw/kernel/include/gpu.h)，目标
+架构为 `riscv32-gpu`。每个硬件线程的逻辑 hart ID 为：
 
-<!-- MARKDOWN LINKS & IMAGES -->
-<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-[contributors-shield]: https://img.shields.io/github/contributors/MoonGrt/MoonCore-GPU.svg?style=for-the-badge
-[contributors-url]: https://github.com/MoonGrt/MoonCore-GPU/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/MoonGrt/MoonCore-GPU.svg?style=for-the-badge
-[forks-url]: https://github.com/MoonGrt/MoonCore-GPU/network/members
-[stars-shield]: https://img.shields.io/github/stars/MoonGrt/MoonCore-GPU.svg?style=for-the-badge
-[stars-url]: https://github.com/MoonGrt/MoonCore-GPU/stargazers
-[issues-shield]: https://img.shields.io/github/issues/MoonGrt/MoonCore-GPU.svg?style=for-the-badge
-[issues-url]: https://github.com/MoonGrt/MoonCore-GPU/issues
-[license-shield]: https://img.shields.io/github/license/MoonGrt/MoonCore-GPU.svg?style=for-the-badge
-[license-url]: https://github.com/MoonGrt/MoonCore-GPU/blob/master/LICENSE
+```text
+mhartid = core_id * NUM_WARPS * NUM_THREADS
+         + warp_id * NUM_THREADS + thread_id
+```
 
+三种 RTL 共享顶层 ABI `GPUTop`，包括 `io_gpu_launch`、`io_gpu_busy`、
+`io_gpu_done`、active-warp 与 issue 调试信号。硬件模型中，Runtime 会先以
+C ISS 执行 kernel，再恢复 PMEM 执行 RTL，最后比较完整 PMEM；这就是测试
+输出中的 DiffTest 结果。
+
+## 依赖版本
+
+Scala 后端统一使用：Scala 2.13.12、SBT 1.10.7、Mill 1.1.2、
+ScalaTest 3.2.19。Chisel 版本为 6.7.0，SpinalHDL 版本为 1.12.0。
+
+系统还需要 GCC/G++、Verilator、Java、Flex、Bison 以及
+`riscv64-linux-gnu-*` 交叉工具链。`scripts/setup.sh` 提供 `check`、`deps`、
+`java`、`mill`、`sbt`、`verilator`、`toolchain` 和 `all` 子命令。

@@ -1,0 +1,17 @@
+*
+!*/
+!*.h
+!*.c
+!*.cc
+!*.cpp
+!*.S
+!Makefile
+!README
+!README.md
+!LICENSE
+.*
+_*
+*~
+build/
+!.gitignore
+git/

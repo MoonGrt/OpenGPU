@@ -1,0 +1,27 @@
+//| mill-version: 1.1.2
+package build
+
+import mill._
+import mill.scalalib._
+
+// Kept in lockstep with source/OpenPeriph/spinal.
+val spinalVersion = "1.12.0"
+
+object spinal extends SbtModule {
+  def scalaVersion = "2.13.12"
+  override def scalacOptions = Seq.empty
+  override def mvnDeps = Seq(
+    mvn"org.scala-lang:scala-library:2.13.12",
+    mvn"com.github.spinalhdl::spinalhdl-core:$spinalVersion",
+    mvn"com.github.spinalhdl::spinalhdl-lib:$spinalVersion",
+    mvn"org.yaml:snakeyaml:1.8",
+  )
+  override def scalacPluginMvnDeps = Seq(
+    mvn"com.github.spinalhdl::spinalhdl-idsl-plugin:$spinalVersion",
+  )
+  override def moduleDir = super.moduleDir / os.up
+  override def forkWorkingDir = Task { moduleDir / "build" }
+  object test extends SbtTests with TestModule.ScalaTest {
+    override def mvnDeps = Seq(mvn"org.scalatest::scalatest:3.2.19")
+  }
+}

@@ -1,0 +1,128 @@
+mainmenu "OpenGPU Configuration Menu"
+
+choice
+  prompt "Frontend"
+  default FRONTEND_NATIVE
+config FRONTEND_NATIVE
+  bool "Native host"
+config FRONTEND_RISCV
+  bool "RISC-V host (not implemented)"
+config FRONTEND_MIPS
+  bool "MIPS host (not implemented)"
+endchoice
+
+choice
+  prompt "Backend"
+  default HM
+config SM
+  bool "Software Model"
+config HM
+  bool "Hardware Model"
+endchoice
+
+choice
+  prompt "HDL"
+  depends on HM
+  default CHISEL
+config CHISEL
+  bool "Chisel"
+config SPINAL
+  bool "Spinal"
+config VERILOG
+  bool "Verilog/SystemVerilog"
+endchoice
+
+
+menu "GPU Configration"
+config GPU_NUM_CORES
+  int "Number of physical multithreaded cores"
+  range 1 64
+  default 2
+config GPU_NUM_WARPS
+  int "Resident warps per core (power of two)"
+  range 1 64
+  default 2
+config GPU_NUM_THREADS
+  int "Threads per warp (power of two)"
+  range 1 64
+  default 2
+endmenu
+
+
+menu "Trace & Debug"
+config DIFFTEST
+  bool "Compare RTL final PMEM against the C ISS"
+  depends on HM
+  default y
+config WAVE
+  bool "Generate RTL VCD waveform"
+  depends on HM
+  default y
+config WAVE_START
+  int "First RTL cycle written to VCD"
+  depends on WAVE
+  default 0
+config WAVE_END
+  int "Cycle after the last RTL cycle written to VCD"
+  depends on WAVE
+  default 100000
+endmenu
+
+
+menu "Build Options"
+choice
+  prompt "Scala Build Tool"
+  depends on CHISEL || SPINAL
+  default MILL
+config SBT
+  bool "sbt"
+config MILL
+  bool "mill"
+endchoice
+choice
+  prompt "Compiler"
+  default CC_GCC
+config CC_GCC
+  bool "gcc"
+config CC_GPP
+  bool "g++"
+config CC_CLANG
+  depends on !TARGET_AM
+  bool "clang"
+endchoice
+config CC
+  string
+  default "gcc" if CC_GCC
+  default "g++" if CC_GPP
+  default "clang" if CC_CLANG
+  default "none"
+choice
+  prompt "Optimization Level"
+  default CC_O2
+config CC_O0
+  bool "O0"
+config CC_O1
+  bool "O1"
+config CC_O2
+  bool "O2"
+config CC_O3
+  bool "O3"
+endchoice
+config CC_OPT
+  string
+  default "-O0" if CC_O0
+  default "-O1" if CC_O1
+  default "-O2" if CC_O2
+  default "-O3" if CC_O3
+  default "none"
+endmenu
+
+
+menu "Memory Configuration"
+config MBASE
+  hex "Memory base address"
+  default 0x80000000
+config MSIZE
+  hex "Memory size"
+  default 0x8000000
+endmenu #MEMORY
