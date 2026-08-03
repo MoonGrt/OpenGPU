@@ -24,4 +24,5 @@ source
 # scala
 !*.mill
 !*.sbt
+!*.svg
 out
