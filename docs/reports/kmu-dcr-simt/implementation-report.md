@@ -86,12 +86,39 @@ backend-specific Runtime/Verilator cache isolation.
 ## Build-system changes
 
 - Runtime objects and archives are isolated per HDL backend.
+- DCR and KMU/CTA interface types live under each RTL backend's `Interface/`
+  directory; the DCR register map and Runtime-facing simulation ABI remain
+  unchanged.
+- SystemVerilog `GPUTop` keeps a flat DCR simulation boundary and constructs
+  `DcrIf` internally. `GPUKmu` consumes `DcrIf.slave`, while `GPUKmu` and every
+  `GPUCore` communicate through `KmuIf.master/slave`. This avoids a separate
+  simulator-only top-level wrapper.
+- Simulation models are separated into `sw/sim/hm` (Verilator harness) and
+  `sw/sim/sm` (C ISS). Software-only builds produce `libgpu-runtime-sm.a`;
+  hardware builds produce `libgpu-runtime-hw-<rtl>.a`, matching the
+  `gpu_hw_<rtl>_defconfig` naming hierarchy.
+- The Backend menu first selects Software Model or Hardware Model. Hardware
+  Model exposes a nested Implementation choice for Chisel, SpinalHDL, or
+  SystemVerilog.
+- Hardware presets use the uniform `gpu_hw_<rtl>_defconfig` naming scheme;
+  the redundant generic `gpu_hm_defconfig` preset was removed.
+- VCD files are isolated by hardware backend under
+  `hw/build/wave/hw-<rtl>/wave.vcd`, so backend switches do not overwrite an
+  existing waveform.
+- SystemVerilog and SpinalHDL instantiate both `SimInstMem` and `SimDataMem`
+  above each Core. Their cores expose instruction and data request/response
+  ports and no longer contain simulation-memory components.
+- The default topology is 2 cores × 4 warps × 4 lanes.
 - Scala RTL generation depends on `.config` topology values.
 - The Runtime always asks the hardware makefile to check RTL prerequisites.
 - Verilator directories and archives are recreated on model changes so stale
   split objects cannot survive topology transitions.
 - Verilator compilation uses one job to keep wide generated models within the
   available memory limit.
+
+The post-layout-refactor smoke regression passed `vecadd` on the software
+model and all three RTL backends at the new 2×4×4 default. Each RTL run also
+passed full-PMEM DiffTest.
 
 ## Deviations and remaining work
 

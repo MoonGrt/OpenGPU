@@ -69,3 +69,52 @@
 - **Resolution:** Set the shared Verilator compilation job count to one. The resulting model is unchanged; only build parallelism is reduced.
 - **Validation:** `make BACKEND=spinal TOOL=mill -C tests/sizes run` at 1×1×16.
 - **Status:** Resolved.
+
+## I-008 — Stale dependency files referenced moved Runtime headers
+
+- **Stage/backend:** Simulation-model directory refactor
+- **Symptom:** Incremental Runtime builds requested removed
+  `sw/runtime/gpu/gpu_iss.h` and `sw/runtime/gpu/include/gpu.h` paths.
+- **Reproduction:** Move the ISS sources to `sw/sim/sm` while retaining an
+  existing `sw/build/obj-runtime` tree, then run `make run TEST=vecadd`.
+- **Root cause:** Compiler-generated `.d` files contained old absolute header
+  paths from builds predating the directory refactors.
+- **Resolution:** Remove the generated Runtime build cache once after the
+  source move; fresh dependency files now reference `sw/sim/sm/gpu_iss.h`.
+- **Validation:** Clean-build and run `vecadd` on SM, Chisel, SystemVerilog,
+  and SpinalHDL.
+- **Status:** Resolved.
+
+## I-009 — Verilator 4.216 rejects a top-level interface port
+
+- **Stage/backend:** SystemVerilog DCR interface extraction
+- **Symptom:** Verilator reports `Unsupported: Interfaced port on top level
+  module` when `GPUTop` directly consumes `DcrIf`.
+- **Reproduction:** Run `make BACKEND=verilog verilate` with `GPUTop` selected
+  as the Verilator top module.
+- **Root cause:** The installed Verilator 4.216 supports internal interfaces
+  but cannot use one as its C++ top-level boundary.
+- **Resolution:** Keep the Verilator-facing `GPUTop` DCR signals flat and
+  construct `DcrIf` inside `GPUTop`. The KMU still consumes the typed interface,
+  but no simulation-only top wrapper is required.
+- **Validation:** SystemVerilog Verilator build and vecadd full-PMEM DiffTest.
+- **Status:** Resolved.
+
+## I-010 — Hardware build scripts retained paths from before framework move
+
+- **Stage/backend:** Build-framework directory refactor
+- **Symptom:** `make BACKEND=verilog run TEST=vecadd` stopped with `No rule to
+  make target hw/verilog/vsrc/Sim/GPUTopSim.sv`.
+- **Reproduction:** Move the shared wrapper to `hw/common/sim` and RTL make
+  fragments to `hw/scripts`, then run a hardware test.
+- **Root cause:** `hw/scripts/verilog.mk` still referenced the wrapper's old
+  location, while `hw/scripts/rtl.mk` retained its old prerequisite paths.
+  The software and kernel makefiles also disagreed between
+  `libgpu-runtime-verilog.a` and `libgpu-runtime-hw-verilog.a`.
+- **Resolution:** Remove the no-longer-required top-level wrapper after
+  restoring flat DCR ports on `GPUTop`, point build dependencies at
+  `hw/scripts`, and use `hw-<rtl>` consistently for Runtime archives, object
+  directories, and waveform directories.
+- **Validation:** Configuration/build/run of vecadd on SM, SystemVerilog,
+  Chisel, and SpinalHDL; all RTL backends passed full-PMEM DiffTest.
+- **Status:** Resolved.

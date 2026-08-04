@@ -29,7 +29,7 @@ scripts/setup.sh check
 Select the SystemVerilog backend and run the default `vecadd` test:
 
 ```sh
-make gpu_verilog_defconfig
+make gpu_hw_verilog_defconfig
 make run
 ```
 
@@ -63,11 +63,17 @@ flowchart TB
     hw --> chisel[chisel/ — Chisel sources and Scala builds]
     hw --> spinal[spinal/ — SpinalHDL sources and Scala builds]
     hw --> verilog[verilog/ — SystemVerilog sources and DPI]
+    chisel --> cif[Interface/ — DCR and KMU bundles]
+    spinal --> sif[Interface/ — DCR and KMU bundles]
+    verilog --> vif[Interface/ — DCR and KMU interfaces]
     hw --> hwbuild[build/ — generated RTL, Verilator objects, waves]
 
     repo --> sw[sw/ — software stack]
     sw --> api[include/ — public host runtime API]
-    sw --> runtime[runtime/ — DCR launch, PMEM, C ISS, RTL harness]
+    sw --> runtime[runtime/ — DCR launch and PMEM services]
+    sw --> sim[sim/ — simulation models]
+    sim --> sm[sm/ — C ISS software model]
+    sim --> hm[hm/ — Verilator hardware-model harness]
     sw --> kernel[kernel/ — RV32E ABI, startup code, linker script]
     sw --> launcher[launcher.cpp — native frontend entry wrapper]
 
@@ -86,29 +92,29 @@ flowchart TB
 
 | Backend | Configuration | Scala build tool |
 | --- | --- | --- |
-| SystemVerilog | `make gpu_verilog_defconfig` | Not required |
-| Chisel | `make gpu_chisel_defconfig` | `TOOL=mill` or `TOOL=sbt` |
-| SpinalHDL | `make gpu_spinal_defconfig` | `TOOL=mill` or `TOOL=sbt` |
+| SystemVerilog | `make gpu_hw_verilog_defconfig` | Not required |
+| Chisel | `make gpu_hw_chisel_defconfig` | `TOOL=mill` or `TOOL=sbt` |
+| SpinalHDL | `make gpu_hw_spinal_defconfig` | `TOOL=mill` or `TOOL=sbt` |
 | C ISS only | `make gpu_sm_defconfig` | Not required |
 
 For example:
 
 ```sh
-make gpu_chisel_defconfig
+make gpu_hw_chisel_defconfig
 make TOOL=mill run
 
-make gpu_spinal_defconfig
+make gpu_hw_spinal_defconfig
 make TOOL=sbt run
 ```
 
-`gpu_hm_defconfig` is retained as a compatibility alias for the Chisel hardware model. A backend can also be overridden for one command without changing `.config`:
+A hardware backend can also be overridden for one command without changing `.config`:
 
 ```sh
 make BACKEND=spinal TOOL=mill rtl
 make BACKEND=verilog verilate
 ```
 
-Use `make menuconfig` to select the frontend, software or hardware model, HDL, build tool, trace options, and topology. `GPU_NUM_WARPS` and `GPU_NUM_THREADS` must be powers of two; the supported configurable range for each topology dimension is 1–64.
+Use `make menuconfig` to select the frontend and model from the Backend menu. Hardware Model enables a second Implementation choice for Chisel, SpinalHDL, or SystemVerilog; Software Model uses the C ISS directly. The default topology is 2 cores × 4 warps × 4 threads. `GPU_NUM_WARPS` and `GPU_NUM_THREADS` must be powers of two; the supported configurable range for each topology dimension is 1–64.
 
 ## Build targets
 
@@ -120,7 +126,7 @@ The root `Makefile` is the main entry point:
 | `make rtl` | Generate or select RTL for the configured backend |
 | `make verilate` | Build the Verilator static library |
 | `make run TEST=vecadd` | Build and run one self-checking kernel test |
-| `make wave TEST=vecadd` | Run a test and open `hw/build/wave.vcd` in GTKWave |
+| `make wave TEST=vecadd` | Run a test and open `hw/build/wave/hw-<rtl>/wave.vcd` in GTKWave |
 | `make menuconfig` | Interactively edit the project configuration |
 | `make clean-all` | Remove generated project build products |
 

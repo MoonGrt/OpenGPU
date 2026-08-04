@@ -11,26 +11,27 @@ config FRONTEND_MIPS
   bool "MIPS host (not implemented)"
 endchoice
 
+menu "Backend"
 choice
-  prompt "Backend"
+  prompt "Model"
   default HM
 config SM
   bool "Software Model"
 config HM
   bool "Hardware Model"
 endchoice
-
 choice
-  prompt "HDL"
   depends on HM
+  prompt "Implementation"
   default CHISEL
 config CHISEL
   bool "Chisel"
 config SPINAL
   bool "Spinal"
 config VERILOG
-  bool "Verilog/SystemVerilog"
+  bool "SystemVerilog"
 endchoice
+endmenu
 
 
 menu "GPU Configration"
@@ -41,11 +42,11 @@ config GPU_NUM_CORES
 config GPU_NUM_WARPS
   int "Resident warps per core (power of two)"
   range 1 64
-  default 2
+  default 4
 config GPU_NUM_THREADS
   int "Threads per warp (power of two)"
   range 1 64
-  default 2
+  default 4
 endmenu
 
 

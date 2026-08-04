@@ -2,10 +2,10 @@ package gpu.riscv
 
 import chisel3._
 import chisel3.util._
-import gpu.CtaRequest
+import gpu.interfaces.CtaRequest
 import gpu.perip.mem.{DataBus, InstBus}
 
-class Core(coreId: Int, numWarps: Int, numThreads: Int) extends Module {
+class GPUCore(coreId: Int, numWarps: Int, numThreads: Int) extends Module {
   private val DataWidth = 32
   private val NumRegs = 16
   private val NumContexts = numWarps * numThreads

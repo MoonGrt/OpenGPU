@@ -1,4 +1,4 @@
-SPINAL_MAIN := gpu.spinal.GPUTop
+SPINAL_MAIN := gpu.GPUTop
 SPINAL_SRCS := $(shell find $(OPENGPU_HOME)/hw/spinal/src -name '*.scala')
 RTL_FINAL := $(RTL_DIR)/GPUTop.v
 

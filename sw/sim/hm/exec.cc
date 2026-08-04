@@ -5,6 +5,7 @@
 #include "VGPUTop.h"
 
 #if defined(CONFIG_WAVE)
+#include <filesystem>
 #include <verilated_vcd_c.h>
 static VerilatedVcdC *wave;
 #endif
@@ -64,6 +65,7 @@ extern "C" void rtl_init(int argc, char **argv) {
   Verilated::traceEverOn(true);
   wave = new VerilatedVcdC;
   top->trace(wave, 99);
+  std::filesystem::create_directories(WAVEOUT);
   wave->open(WAVEOUT "/wave.vcd");
 #endif
   reset();

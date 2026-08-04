@@ -1,12 +1,12 @@
 import chisel3._
 import chisel3.util.{log2Ceil, isPow2}
-import gpu.{CtaRequest, Kmu}
-import gpu.riscv.Core
+import gpu.Kmu
+import gpu.riscv.GPUCore
 import gpu.perip.mem.{SimDataMem, SimInstMem}
 
-class TOP(numGpuCores: Int, numWarps: Int, numThreads: Int) extends Module {
+class TOP(numCores: Int, numWarps: Int, numThreads: Int) extends Module {
   override def desiredName: String = "GPUTop"
-  require(numGpuCores >= 1 && numGpuCores <= 16)
+  require(numCores >= 1 && numCores <= 16)
   require(numWarps >= 1 && isPow2(numWarps))
   require(numThreads >= 1 && isPow2(numThreads))
   private val warpBits = math.max(1, log2Ceil(numWarps))
@@ -18,20 +18,20 @@ class TOP(numGpuCores: Int, numWarps: Int, numThreads: Int) extends Module {
     val gpu_launch = Input(Bool())
     val gpu_busy = Output(Bool())
     val gpu_fault = Output(Bool())
-    val gpu_done = Output(UInt(numGpuCores.W))
-    val gpu_active_warps = Output(Vec(numGpuCores, UInt(numWarps.W)))
-    val gpu_issue_warp = Output(Vec(numGpuCores, UInt(warpBits.W)))
-    val gpu_issue_mask = Output(Vec(numGpuCores, UInt(numThreads.W)))
+    val gpu_done = Output(UInt(numCores.W))
+    val gpu_active_warps = Output(Vec(numCores, UInt(numWarps.W)))
+    val gpu_issue_warp = Output(Vec(numCores, UInt(warpBits.W)))
+    val gpu_issue_mask = Output(Vec(numCores, UInt(numThreads.W)))
   })
 
-  val kmu = Module(new Kmu(numGpuCores))
-  kmu.io.dcrValid := io.dcr_valid
-  kmu.io.dcrAddr := io.dcr_addr
-  kmu.io.dcrData := io.dcr_data
+  val kmu = Module(new Kmu(numCores))
+  kmu.io.dcr.valid := io.dcr_valid
+  kmu.io.dcr.addr := io.dcr_addr
+  kmu.io.dcr.data := io.dcr_data
   kmu.io.launch := io.gpu_launch
 
-  val cores = (0 until numGpuCores).map { coreId =>
-    val core = Module(new Core(coreId, numWarps, numThreads))
+  val cores = (0 until numCores).map { coreId =>
+    val core = Module(new GPUCore(coreId, numWarps, numThreads))
     val imem = Module(new SimInstMem)
     val dmem = Module(new SimDataMem)
     core.io.cta.valid := kmu.io.ctaValid(coreId)
@@ -55,8 +55,8 @@ object TOP extends App {
     "disallowLocalVariables", "disallowPackedArrays",
     "locationInfoStyle=wrapInAtSquareBracket").mkString(","))
   val cores = sys.env.get("GPU_NUM_CORES").map(_.toInt).getOrElse(2)
-  val warps = sys.env.get("GPU_NUM_WARPS").map(_.toInt).getOrElse(2)
-  val threads = sys.env.get("GPU_NUM_THREADS").map(_.toInt).getOrElse(2)
+  val warps = sys.env.get("GPU_NUM_WARPS").map(_.toInt).getOrElse(4)
+  val threads = sys.env.get("GPU_NUM_THREADS").map(_.toInt).getOrElse(4)
   circt.stage.ChiselStage.emitSystemVerilogFile(
     new TOP(cores, warps, threads), args, options)
 }

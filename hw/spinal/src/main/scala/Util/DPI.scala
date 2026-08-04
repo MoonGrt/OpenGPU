@@ -1,4 +1,4 @@
-package gpu.spinal.util
+package gpu.util
 
 import spinal.core._
 

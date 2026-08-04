@@ -1,22 +1,12 @@
-package gpu.spinal
+package gpu
 
 import spinal.core._
-
-class CtaRequest extends Bundle {
-  val startupPc = UInt(32 bits)
-  val argsAddr = UInt(32 bits)
-  val blockIdx = Vec(UInt(32 bits), 3)
-  val blockDim = Vec(UInt(32 bits), 3)
-  val gridDim = Vec(UInt(32 bits), 3)
-  val blockSize = UInt(32 bits)
-}
+import gpu.interfaces.{CtaRequest, DcrWrite}
 
 class Kmu(numCores: Int) extends Component {
   private val cb = scala.math.max(1, log2Up(numCores))
   val io = new Bundle {
-    val dcrValid = in Bool()
-    val dcrAddr = in UInt(12 bits)
-    val dcrData = in UInt(32 bits)
+    val dcr = in(new DcrWrite)
     val launch = in Bool()
     val coreReady = in Bits(numCores bits)
     val coreBusy = in Bits(numCores bits)
@@ -34,18 +24,18 @@ class Kmu(numCores: Int) extends Component {
   val running = Reg(Bool()) init False
   val rrCore = Reg(UInt(cb bits)) init 0
 
-  when(io.dcrValid) {
-    switch(io.dcrAddr) {
-      is(U(0x010)) { startupPc := io.dcrData }
-      is(U(0x011)) { argsAddr := io.dcrData }
-      is(U(0x012)) { argsSize := io.dcrData }
-      is(U(0x013)) { blockDim(0) := io.dcrData }
-      is(U(0x014)) { blockDim(1) := io.dcrData }
-      is(U(0x015)) { blockDim(2) := io.dcrData }
-      is(U(0x016)) { gridDim(0) := io.dcrData }
-      is(U(0x017)) { gridDim(1) := io.dcrData }
-      is(U(0x018)) { gridDim(2) := io.dcrData }
-      is(U(0x019)) { blockSize := io.dcrData }
+  when(io.dcr.valid) {
+    switch(io.dcr.addr) {
+      is(U(0x010)) { startupPc := io.dcr.data }
+      is(U(0x011)) { argsAddr := io.dcr.data }
+      is(U(0x012)) { argsSize := io.dcr.data }
+      is(U(0x013)) { blockDim(0) := io.dcr.data }
+      is(U(0x014)) { blockDim(1) := io.dcr.data }
+      is(U(0x015)) { blockDim(2) := io.dcr.data }
+      is(U(0x016)) { gridDim(0) := io.dcr.data }
+      is(U(0x017)) { gridDim(1) := io.dcr.data }
+      is(U(0x018)) { gridDim(2) := io.dcr.data }
+      is(U(0x019)) { blockSize := io.dcr.data }
     }
   }
 

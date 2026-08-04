@@ -1,10 +1,11 @@
-package gpu.spinal
+package gpu
 
 import spinal.core._
 import spinal.lib._
-import gpu.spinal.riscv.GPUCore
+import gpu.riscv.GPUCore
+import gpu.peripheral.{SimDataMem, SimInstMem}
 
-class GPUTop(cores: Int, warps: Int, threads: Int) extends Component {
+class GPUTop(numCores: Int, numWarps: Int, numThreads: Int) extends Component {
   ClockDomain.current.clock.setName("clock")
   val io = new Bundle {
     val dcr_valid = in Bool()
@@ -13,29 +14,40 @@ class GPUTop(cores: Int, warps: Int, threads: Int) extends Component {
     val gpu_launch = in Bool()
     val gpu_busy = out Bool()
     val gpu_fault = out Bool()
-    val gpu_done = out Bits(cores bits)
-    val gpu_active_warps = out Bits(cores * warps bits)
-    val gpu_issue_warp = out Bits(cores * scala.math.max(1, log2Up(warps)) bits)
-    val gpu_issue_mask = out Bits(cores * threads bits)
+    val gpu_done = out Bits(numCores bits)
+    val gpu_active_warps = out Bits(numCores * numWarps bits)
+    val gpu_issue_warp = out Bits(numCores * scala.math.max(1, log2Up(numWarps)) bits)
+    val gpu_issue_mask = out Bits(numCores * numThreads bits)
   }
-  val kmu = new Kmu(cores)
-  kmu.io.dcrValid := io.dcr_valid
-  kmu.io.dcrAddr := io.dcr_addr
-  kmu.io.dcrData := io.dcr_data
+  val kmu = new Kmu(numCores)
+  kmu.io.dcr.valid := io.dcr_valid
+  kmu.io.dcr.addr := io.dcr_addr
+  kmu.io.dcr.data := io.dcr_data
   kmu.io.launch := io.gpu_launch
-  val cs = (0 until cores).map(i => new GPUCore(i, warps, threads))
-  for (i <- 0 until cores) {
-    cs(i).io.ctaValid := kmu.io.ctaValid(i)
-    cs(i).io.cta := kmu.io.cta
+  val cores = (0 until numCores).map(i => new GPUCore(i, numWarps, numThreads))
+  for (i <- 0 until numCores) {
+    val imem = new SimInstMem
+    val dmem = new SimDataMem
+    cores(i).io.ctaValid := kmu.io.ctaValid(i)
+    cores(i).io.cta := kmu.io.cta
+    imem.io.ren := cores(i).io.imemRen
+    imem.io.addr := cores(i).io.imemAddr
+    cores(i).io.imemRdata := imem.io.rdata
+    dmem.io.ren := cores(i).io.dmemRen
+    dmem.io.wen := cores(i).io.dmemWen
+    dmem.io.mask := cores(i).io.dmemMask
+    dmem.io.addr := cores(i).io.dmemAddr
+    dmem.io.wdata := cores(i).io.dmemWdata
+    cores(i).io.dmemRdata := dmem.io.rdata
   }
-  kmu.io.coreReady := Vec(cs.map(_.io.ctaReady)).asBits
-  kmu.io.coreBusy := Vec(cs.map(_.io.busy)).asBits
+  kmu.io.coreReady := Vec(cores.map(_.io.ctaReady)).asBits
+  kmu.io.coreBusy := Vec(cores.map(_.io.busy)).asBits
   io.gpu_busy := kmu.io.busy
-  io.gpu_fault := Vec(cs.map(_.io.fault)).asBits.orR
-  io.gpu_done := Vec(cs.map(_.io.done)).asBits
-  io.gpu_active_warps := Vec(cs.map(_.io.activeWarps)).asBits
-  io.gpu_issue_warp := Vec(cs.map(_.io.issueWarp.asBits)).asBits
-  io.gpu_issue_mask := Vec(cs.map(_.io.issueMask)).asBits
+  io.gpu_fault := Vec(cores.map(_.io.fault)).asBits.orR
+  io.gpu_done := Vec(cores.map(_.io.done)).asBits
+  io.gpu_active_warps := Vec(cores.map(_.io.activeWarps)).asBits
+  io.gpu_issue_warp := Vec(cores.map(_.io.issueWarp.asBits)).asBits
+  io.gpu_issue_mask := Vec(cores.map(_.io.issueMask)).asBits
 }
 
 object GPUTop extends App {
@@ -44,6 +56,6 @@ object GPUTop extends App {
     defaultConfigForClockDomains = ClockDomainConfig(resetKind = SYNC)
   ).generateVerilog(new GPUTop(
     sys.env.getOrElse("GPU_NUM_CORES", "2").toInt,
-    sys.env.getOrElse("GPU_NUM_WARPS", "2").toInt,
-    sys.env.getOrElse("GPU_NUM_THREADS", "2").toInt))
+    sys.env.getOrElse("GPU_NUM_WARPS", "4").toInt,
+    sys.env.getOrElse("GPU_NUM_THREADS", "4").toInt))
 }

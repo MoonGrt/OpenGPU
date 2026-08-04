@@ -1,10 +1,9 @@
 # Shared Verilator/DPI build.  Each HDL backend supplies RTL_FINAL and its
-# source prerequisites through scripts/rtl/<backend>.mk.
+# source prerequisites through hw/scripts/<backend>.mk.
 GTKWAVE ?= gtkwave
 VERILATOR ?= verilator
 VTOP := GPUTop
 HW_BUILD_DIR := $(OPENGPU_HOME)/hw/build
-WAVE_FILE := $(HW_BUILD_DIR)/wave.vcd
 
 ifndef HDL_BACKEND
   ifeq ($(CONFIG_SPINAL),y)
@@ -16,8 +15,13 @@ ifndef HDL_BACKEND
   endif
 endif
 
+WAVE_VARIANT := hw-$(HDL_BACKEND)
+WAVE_FILE := $(HW_BUILD_DIR)/wave/$(WAVE_VARIANT)/wave.vcd
+
 RTL_DIR := $(HW_BUILD_DIR)/rtl/$(HDL_BACKEND)
-include $(OPENGPU_HOME)/scripts/rtl/$(HDL_BACKEND).mk
+include $(OPENGPU_HOME)/hw/scripts/$(HDL_BACKEND).mk
+RTL_TOP ?= $(VTOP)
+VERILATOR_PREFIX ?= V$(VTOP)
 
 # Isolate generated C++ objects per source backend.  The same Verilator top
 # name is intentionally used by all three implementations.
@@ -37,12 +41,13 @@ VROOT ?= $(shell $(VERILATOR) -V 2>/dev/null | \
 INC_PATH += $(VROOT)/include $(VROOT)/include/vltstd $(VBUILD)
 
 $(VLIB): $(RTL_SOURCES) $(OPENGPU_HOME)/.config $(DPI_SOURCE) \
-         $(OPENGPU_HOME)/scripts/rtl/rtl.mk \
-         $(OPENGPU_HOME)/scripts/rtl/$(HDL_BACKEND).mk
+         $(OPENGPU_HOME)/hw/scripts/rtl.mk \
+         $(OPENGPU_HOME)/hw/scripts/$(HDL_BACKEND).mk
 	@echo "+ VERILATE $(HDL_BACKEND) $<"
 	@$(RM) -r $(VBUILD)
 	@mkdir -p $(VBUILD)
-	$(VERILATOR) $(VERILATOR_CFLAGS) $(VERILATOR_PARAMS) $(VSRCS) --top-module $(VTOP) --Mdir $(VBUILD)
+	$(VERILATOR) $(VERILATOR_CFLAGS) $(VERILATOR_PARAMS) $(VSRCS) \
+	  --top-module $(RTL_TOP) --prefix $(VERILATOR_PREFIX) --Mdir $(VBUILD)
 	$(MAKE) -C $(VBUILD) -f V$(VTOP).mk
 	$(MAKE) -C $(VBUILD) -f V$(VTOP).mk verilated.o verilated_dpi.o \
 	  $(if $(CONFIG_WAVE),verilated_vcd_c.o)
@@ -54,7 +59,11 @@ $(VLIB): $(RTL_SOURCES) $(OPENGPU_HOME)/.config $(DPI_SOURCE) \
 
 rtl: $(RTL_FINAL)
 verilate: $(VLIB)
-wave: $(WAVE_FILE)
+wave:
+	@test -f $(WAVE_FILE) || { \
+	  echo "No waveform found at $(WAVE_FILE); enable CONFIG_WAVE and run a hardware test first." >&2; \
+	  exit 2; \
+	}
 	$(GTKWAVE) $(WAVE_FILE) >/dev/null 2>&1 &
 
 .PHONY: rtl verilate wave

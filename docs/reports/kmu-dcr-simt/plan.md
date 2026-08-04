@@ -33,10 +33,10 @@ The common verification matrix is:
 
 | Configuration | Purpose |
 | --- | --- |
-| 2 cores × 2 warps × 2 lanes | Default full application and PMEM DiffTest regression |
+| 2 cores × 4 warps × 4 lanes | Default full application and PMEM DiffTest regression |
 | 1 core × 1 warp × 1 lane | Minimum legal topology and zero-width-index edge cases |
 | 1 core × 1 warp × 16 lanes | Eight-entry divergence-stack overflow and wide partial-mask behavior |
-| 4 cores × 4 warps × 4 lanes | Multi-core elaboration and parameter-width checks |
+| 4 cores × 4 warps × 4 lanes | Larger multi-core elaboration and parameter-width checks |
 
 Acceptance requires all three backends to expose the same DCR/top-level ABI,
 pass the default and minimum-topology suites, elaborate the larger topology,

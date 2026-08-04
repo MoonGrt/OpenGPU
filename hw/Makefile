@@ -26,7 +26,7 @@ ifneq ($(filter $(TOOL),mill sbt),$(TOOL))
   $(error Unsupported TOOL=$(TOOL); use mill or sbt)
 endif
 
-include $(OPENGPU_HOME)/scripts/rtl/rtl.mk
+include $(OPENGPU_HOME)/hw/scripts/rtl.mk
 
 clean:
 	rm -rf $(OPENGPU_HOME)/hw/build

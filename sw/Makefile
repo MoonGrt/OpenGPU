@@ -6,7 +6,9 @@ BACKEND ?= auto
 TOOL ?= $(if $(CONFIG_SBT),sbt,mill)
 BUILD_DIR := $(OPENGPU_HOME)/sw/build
 
-ifeq ($(BACKEND),auto)
+ifeq ($(CONFIG_SM),y)
+  HDL_BACKEND := sm
+else ifeq ($(BACKEND),auto)
   ifeq ($(CONFIG_SPINAL),y)
     HDL_BACKEND := spinal
   else ifeq ($(CONFIG_VERILOG),y)
@@ -17,8 +19,9 @@ ifeq ($(BACKEND),auto)
 else
   HDL_BACKEND := $(BACKEND)
 endif
-OBJ_DIR := $(BUILD_DIR)/obj-runtime/$(HDL_BACKEND)
-RUNTIME_LIB := $(BUILD_DIR)/libgpu-runtime-$(HDL_BACKEND).a
+RUNTIME_VARIANT := $(if $(filter sm,$(HDL_BACKEND)),sm,hw-$(HDL_BACKEND))
+OBJ_DIR := $(BUILD_DIR)/obj-runtime/$(RUNTIME_VARIANT)
+RUNTIME_LIB := $(BUILD_DIR)/libgpu-runtime-$(RUNTIME_VARIANT).a
 VBUILD := $(OPENGPU_HOME)/hw/build/verilated/$(HDL_BACKEND)
 VLIB := $(VBUILD)/libVGPUTop.a
 VROOT ?= $(shell verilator -V 2>/dev/null | sed -n 's/^[[:space:]]*VERILATOR_ROOT[[:space:]]*=[[:space:]]*//p' | head -1)
@@ -26,13 +29,13 @@ VROOT ?= $(shell verilator -V 2>/dev/null | sed -n 's/^[[:space:]]*VERILATOR_ROO
 CC := gcc
 CXX := g++
 AR := ar
-RUNTIME_C_SRCS := runtime/gpu/gpu.c runtime/gpu/gpu_iss.c runtime/device/memory.c
+RUNTIME_C_SRCS := runtime/gpu/gpu.c sim/sm/gpu_iss.c runtime/device/memory.c
 RUNTIME_CXX_SRCS := launcher.cpp
 ifeq ($(CONFIG_HM),y)
-RUNTIME_CXX_SRCS += runtime/rtl/exec.cc
+RUNTIME_CXX_SRCS += sim/hm/exec.cc
 endif
 INC_PATH := $(OPENGPU_HOME)/sw/include $(OPENGPU_HOME)/sw/runtime \
-            $(OPENGPU_HOME)/sw/runtime/gpu/include $(OPENGPU_HOME)/sw/runtime/gpu
+            $(OPENGPU_HOME)/sw/runtime/gpu $(OPENGPU_HOME)/sw/sim/sm
 VERILATOR_INC_FLAGS :=
 ifeq ($(CONFIG_HM),y)
 VERILATOR_INC_FLAGS := -isystem $(VROOT)/include -isystem $(VROOT)/include/vltstd -I$(VBUILD)
@@ -40,8 +43,8 @@ endif
 HOST_CFLAGS := -MMD -Wall -Werror $(CONFIG_CC_OPT) $(addprefix -I,$(INC_PATH)) $(VERILATOR_INC_FLAGS)
 HOST_CXXFLAGS := $(HOST_CFLAGS) -std=c++17
 ifeq ($(CONFIG_WAVE),y)
-HOST_CFLAGS += -DWAVEOUT=\"$(OPENGPU_HOME)/hw/build\"
-HOST_CXXFLAGS += -DWAVEOUT=\"$(OPENGPU_HOME)/hw/build\"
+HOST_CFLAGS += -DWAVEOUT=\"$(OPENGPU_HOME)/hw/build/wave/$(RUNTIME_VARIANT)\"
+HOST_CXXFLAGS += -DWAVEOUT=\"$(OPENGPU_HOME)/hw/build/wave/$(RUNTIME_VARIANT)\"
 endif
 RUNTIME_OBJS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(RUNTIME_C_SRCS)) \
                 $(patsubst %.cc,$(OBJ_DIR)/%.o,$(filter %.cc,$(RUNTIME_CXX_SRCS))) \
@@ -65,7 +68,7 @@ $(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	@$(CXX) $(HOST_CXXFLAGS) -c -o $@ $<
 ifeq ($(CONFIG_HM),y)
-$(OBJ_DIR)/runtime/rtl/exec.o: check-vlib
+$(OBJ_DIR)/sim/hm/exec.o: check-vlib
 check-vlib:
 	$(MAKE) -C $(OPENGPU_HOME)/hw BACKEND=$(HDL_BACKEND) TOOL=$(TOOL) verilate
 endif

@@ -35,8 +35,6 @@ run test:
 # A waveform is produced by the Runtime during a test run, not by RTL
 # elaboration alone.  Run the selected test first, then open its VCD.
 wave: run
-	@test -f $(OPENGPU_HOME)/hw/build/wave.vcd || { \
-	  echo "No waveform was generated; enable CONFIG_WAVE in menuconfig." >&2; exit 2; }
 	$(MAKE) -C $(OPENGPU_HOME)/hw BACKEND=$(BACKEND) TOOL=$(TOOL) wave
 
 clean:

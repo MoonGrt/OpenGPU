@@ -1,15 +1,16 @@
 // RV32E SIMT core. A warp owns one PC and active mask; lanes own register data.
 module GPUCore #(
-  parameter integer CORE_ID=0, WARPS=2, THREADS=2, STACK_DEPTH=8
+  parameter integer CORE_ID=0, WARPS=4, THREADS=4, STACK_DEPTH=8
 ) (
   input wire clock, input wire reset,
-  input wire cta_valid, output wire cta_ready,
-  input wire [31:0] cta_startup_pc, cta_args_addr,
-  input wire [31:0] cta_block_idx_x, cta_block_idx_y, cta_block_idx_z,
-  input wire [31:0] cta_block_dim_x, cta_block_dim_y, cta_block_dim_z,
-  input wire [31:0] cta_grid_dim_x, cta_grid_dim_y, cta_grid_dim_z,
-  input wire [31:0] cta_block_size,
-  output wire busy, output wire fault, output wire done,
+  KmuIf.slave kmu_if,
+  output wire imem_ren, output wire [31:0] imem_addr,
+  input wire [31:0] imem_rdata,
+  output reg dmem_ren, output reg dmem_wen,
+  output reg [3:0] dmem_mask,
+  output reg [31:0] dmem_addr, output reg [31:0] dmem_wdata,
+  input wire [31:0] dmem_rdata,
+  output wire fault, output wire done,
   output wire [WARPS-1:0] active_warps,
   output reg [((WARPS<=1)?1:$clog2(WARPS))-1:0] issue_warp,
   output reg [THREADS-1:0] issue_mask
@@ -36,14 +37,20 @@ module GPUCore #(
   reg [31:0] issue_pc, issue_inst;
   reg [TB-1:0] mem_thread;
 
-  reg [31:0] imem_addr, dmem_addr, dmem_wdata;
-  reg [3:0] dmem_mask;
-  reg dmem_ren, dmem_wen;
-  wire [31:0] imem_rdata, dmem_rdata;
-  SimDpiMem imem(.ren(state==FETCH),.wen(1'b0),.mask(8'b0),
-    .addr(imem_addr),.wdata(0),.rdata(imem_rdata));
-  SimDpiMem dmem(.ren(dmem_ren),.wen(dmem_wen),.mask({4'b0,dmem_mask}),
-    .addr(dmem_addr),.wdata(dmem_wdata),.rdata(dmem_rdata));
+  wire cta_valid = kmu_if.cta_valid[CORE_ID];
+  wire cta_ready;
+  wire [31:0] cta_startup_pc = kmu_if.startup_pc;
+  wire [31:0] cta_args_addr = kmu_if.args_addr;
+  wire [31:0] cta_block_idx_x = kmu_if.block_idx_x;
+  wire [31:0] cta_block_idx_y = kmu_if.block_idx_y;
+  wire [31:0] cta_block_idx_z = kmu_if.block_idx_z;
+  wire [31:0] cta_block_dim_x = kmu_if.block_dim_x;
+  wire [31:0] cta_block_dim_y = kmu_if.block_dim_y;
+  wire [31:0] cta_block_dim_z = kmu_if.block_dim_z;
+  wire [31:0] cta_grid_dim_x = kmu_if.grid_dim_x;
+  wire [31:0] cta_grid_dim_y = kmu_if.grid_dim_y;
+  wire [31:0] cta_grid_dim_z = kmu_if.grid_dim_z;
+  wire [31:0] cta_block_size = kmu_if.block_size;
 
   integer i,t,w,c,base,rbase,selected,candidate,local_id,block_linear;
   reg found, supported, uses_rd, uses_rs1, uses_rs2, write_rd;
@@ -56,16 +63,18 @@ module GPUCore #(
   reg [THREADS-1:0] taken_mask, fall_mask;
   reg take, target_set, divergent_target;
 
-  assign busy=cta_active;
   assign done=!cta_active;
   assign fault=fault_r;
   assign cta_ready=!cta_active && state==SCHED;
+  assign kmu_if.core_ready[CORE_ID]=cta_ready;
+  assign kmu_if.core_busy[CORE_ID]=cta_active;
+  assign imem_ren=state==FETCH;
+  assign imem_addr=issue_pc;
   generate for (genvar aw=0;aw<WARPS;aw=aw+1)
     assign active_warps[aw]=warp_valid[aw];
   endgenerate
 
   always @(*) begin
-    imem_addr=issue_pc;
     dmem_ren=0; dmem_wen=0; dmem_addr=0; dmem_wdata=0; dmem_mask=0;
     if (state==MEM_REQ || state==MEM_RESP) begin
       c=int'(issue_warp)*THREADS+int'(mem_thread); rbase=c*16;

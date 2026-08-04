@@ -1,9 +1,8 @@
-package gpu.spinal.riscv
+package gpu.riscv
 
 import spinal.core._
 import spinal.lib._
-import gpu.spinal.CtaRequest
-import gpu.spinal.peripheral.SimDpiMem
+import gpu.interfaces.CtaRequest
 
 class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
   private val contexts = warps * threads
@@ -18,6 +17,15 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
     val ctaValid = in Bool()
     val ctaReady = out Bool()
     val cta = in(new CtaRequest)
+    val imemRen = out Bool()
+    val imemAddr = out UInt(32 bits)
+    val imemRdata = in UInt(32 bits)
+    val dmemRen = out Bool()
+    val dmemWen = out Bool()
+    val dmemMask = out Bits(8 bits)
+    val dmemAddr = out UInt(32 bits)
+    val dmemWdata = out UInt(32 bits)
+    val dmemRdata = in UInt(32 bits)
     val busy = out Bool()
     val fault = out Bool()
     val done = out Bool()
@@ -60,12 +68,10 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
   io.issueWarp := iw
   io.issueMask := im
 
-  val imem = new SimDpiMem
-  val dmem = new SimDpiMem
-  imem.io.ren := state === 1
-  imem.io.wen := False; imem.io.mask := 0; imem.io.addr := ip; imem.io.wdata := 0
-  dmem.io.ren := False; dmem.io.wen := False; dmem.io.mask := 0
-  dmem.io.addr := 0; dmem.io.wdata := 0
+  io.imemRen := state === 1
+  io.imemAddr := ip
+  io.dmemRen := False; io.dmemWen := False; io.dmemMask := 0
+  io.dmemAddr := 0; io.dmemWdata := 0
 
   when(io.ctaValid && io.ctaReady) {
     ctaActive := True; faultR := False; state := 0; rr := 0
@@ -165,7 +171,7 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
         .otherwise { ctaActive:=False }
       }
     }
-    is(1) { inst:=imem.io.rdata; state:=2 }
+    is(1) { inst:=io.imemRdata; state:=2 }
     is(2) {
       when(badReg) { faultR:=True;ctaActive:=False;state:=0 }
       .elsewhen(isLoad||isStore) { mt:=0;state:=3 }
@@ -228,10 +234,10 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
       val c=ctx(mt);val b0=base(c);val addr=regs((b0+rs1(3 downto 0)).resized)+Mux(isLoad,immI,immS)
       when(!laneActive(mt)){when(mt===threads-1){wPc(iw):=ip+4;advanceWarp()}otherwise{mt:=mt+1}}
       .otherwise {
-        dmem.io.ren:=isLoad;dmem.io.wen:=isStore;dmem.io.addr:=addr&U(0xfffffffcL,32 bits)
-        dmem.io.mask:=Mux(f3===0,(B(1,8 bits)|<<addr(1 downto 0)),Mux(f3===1,(B(3,8 bits)|<<addr(1 downto 0)),B(15,8 bits)))
-        dmem.io.wdata:=regs((b0+rs2(3 downto 0)).resized)|<<(addr(1 downto 0)<<3)
-        when(isLoad) { memReadData := dmem.io.rdata }
+        io.dmemRen:=isLoad;io.dmemWen:=isStore;io.dmemAddr:=addr&U(0xfffffffcL,32 bits)
+        io.dmemMask:=Mux(f3===0,(B(1,8 bits)|<<addr(1 downto 0)),Mux(f3===1,(B(3,8 bits)|<<addr(1 downto 0)),B(15,8 bits)))
+        io.dmemWdata:=regs((b0+rs2(3 downto 0)).resized)|<<(addr(1 downto 0)<<3)
+        when(isLoad) { memReadData := io.dmemRdata }
         state:=4
       }
     }

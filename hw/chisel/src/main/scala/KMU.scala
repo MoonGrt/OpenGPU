@@ -2,22 +2,12 @@ package gpu
 
 import chisel3._
 import chisel3.util._
-
-class CtaRequest extends Bundle {
-  val startupPc = UInt(32.W)
-  val argsAddr = UInt(32.W)
-  val blockIdx = Vec(3, UInt(32.W))
-  val blockDim = Vec(3, UInt(32.W))
-  val gridDim = Vec(3, UInt(32.W))
-  val blockSize = UInt(32.W)
-}
+import gpu.interfaces.{CtaRequest, DcrWrite}
 
 class Kmu(numCores: Int) extends Module {
   private val CoreBits = math.max(1, log2Ceil(numCores))
   val io = IO(new Bundle {
-    val dcrValid = Input(Bool())
-    val dcrAddr = Input(UInt(12.W))
-    val dcrData = Input(UInt(32.W))
+    val dcr = Input(new DcrWrite)
     val launch = Input(Bool())
     val coreReady = Input(UInt(numCores.W))
     val coreBusy = Input(UInt(numCores.W))
@@ -36,18 +26,18 @@ class Kmu(numCores: Int) extends Module {
   val running = RegInit(false.B)
   val rrCore = RegInit(0.U(CoreBits.W))
 
-  when(io.dcrValid) {
-    switch(io.dcrAddr) {
-      is("h010".U) { startupPc := io.dcrData }
-      is("h011".U) { argsAddr := io.dcrData }
-      is("h012".U) { argsSize := io.dcrData }
-      is("h013".U) { blockDim(0) := io.dcrData }
-      is("h014".U) { blockDim(1) := io.dcrData }
-      is("h015".U) { blockDim(2) := io.dcrData }
-      is("h016".U) { gridDim(0) := io.dcrData }
-      is("h017".U) { gridDim(1) := io.dcrData }
-      is("h018".U) { gridDim(2) := io.dcrData }
-      is("h019".U) { blockSize := io.dcrData }
+  when(io.dcr.valid) {
+    switch(io.dcr.addr) {
+      is("h010".U) { startupPc := io.dcr.data }
+      is("h011".U) { argsAddr := io.dcr.data }
+      is("h012".U) { argsSize := io.dcr.data }
+      is("h013".U) { blockDim(0) := io.dcr.data }
+      is("h014".U) { blockDim(1) := io.dcr.data }
+      is("h015".U) { blockDim(2) := io.dcr.data }
+      is("h016".U) { gridDim(0) := io.dcr.data }
+      is("h017".U) { gridDim(1) := io.dcr.data }
+      is("h018".U) { gridDim(2) := io.dcr.data }
+      is("h019".U) { blockSize := io.dcr.data }
     }
   }
 
