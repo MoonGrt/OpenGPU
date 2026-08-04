@@ -11,7 +11,9 @@ static VerilatedVcdC *wave;
 
 static VGPUTop *top = new VGPUTop;
 static uint64_t cycles;
+#if defined(CONFIG_WAVE)
 static uint64_t sim_time;
+#endif
 
 extern "C" int dpi_paddr_read(int addr) {
   if (!in_pmem((uint32_t)addr)) return 0;
@@ -37,18 +39,10 @@ static void dump_wave(void) {
 }
 
 static void tick(void) {
-#if defined(CONFIG_SPINAL)
-  top->clk = 0;
-#else
   top->clock = 0;
-#endif
   top->eval();
   dump_wave();
-#if defined(CONFIG_SPINAL)
-  top->clk = 1;
-#else
   top->clock = 1;
-#endif
   top->eval();
   dump_wave();
   ++cycles;
@@ -63,6 +57,9 @@ static void reset(void) {
 extern "C" void rtl_init(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   top->io_gpu_launch = 0;
+  top->io_dcr_valid = 0;
+  top->io_dcr_addr = 0;
+  top->io_dcr_data = 0;
 #if defined(CONFIG_WAVE)
   Verilated::traceEverOn(true);
   wave = new VerilatedVcdC;
@@ -86,19 +83,31 @@ extern "C" void gpu_rtl_init(void) {
 }
 
 extern "C" bool gpu_rtl_launch(uint32_t entry) {
-  if (entry != GPU_KERNEL_BASE) return false;
-  top->io_gpu_launch = 0;
-  tick();
+  (void)entry;
   top->io_gpu_launch = 1;
+  tick();
+  top->io_gpu_launch = 0;
   tick();
   return true;
 }
 
+extern "C" void gpu_rtl_dcr_write(uint32_t addr, uint32_t data) {
+  top->io_dcr_addr = addr;
+  top->io_dcr_data = data;
+  top->io_dcr_valid = 1;
+  tick();
+  top->io_dcr_valid = 0;
+}
+
+extern "C" bool gpu_rtl_fault(void) {
+  return top->io_gpu_fault;
+}
+
 extern "C" bool gpu_rtl_wait(uint64_t max_cycles) {
-  const uint32_t expected = (1u << CONFIG_GPU_NUM_CORES) - 1u;
   for (uint64_t cycle = 0; cycle < max_cycles; ++cycle) {
-    if ((uint32_t)top->io_gpu_done == expected) return true;
     tick();
+    if (top->io_gpu_fault) return false;
+    if (!top->io_gpu_busy) return true;
   }
-  return (uint32_t)top->io_gpu_done == expected;
+  return !top->io_gpu_busy && !top->io_gpu_fault;
 }

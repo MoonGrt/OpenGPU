@@ -91,7 +91,6 @@ HOST_CXX ?= g++
 HOST_BUILD_DIR := $(WORK_DIR)/build/native
 HOST_MAIN_OBJ := $(HOST_BUILD_DIR)/main.o
 HOST_BINARY := $(WORK_DIR)/build/$(NAME)-native
-RUNTIME_LIB := $(OPENGPU_HOME)/sw/build/libgpu-runtime.a
 ifneq ($(BACKEND),auto)
  RUNTIME_HDL_BACKEND := $(BACKEND)
 else ifeq ($(CONFIG_SPINAL),y)
@@ -101,6 +100,7 @@ else ifeq ($(CONFIG_VERILOG),y)
 else
  RUNTIME_HDL_BACKEND := chisel
 endif
+RUNTIME_LIB := $(OPENGPU_HOME)/sw/build/libgpu-runtime-$(RUNTIME_HDL_BACKEND).a
 RUNTIME_VLIB := $(if $(CONFIG_HM),$(OPENGPU_HOME)/hw/build/verilated/$(RUNTIME_HDL_BACKEND)/libVGPUTop.a)
 GPU_TRACE_LIMIT ?= 10000
 GPU_TRACE_ARGS := $(if $(GPU_TRACE),--gpu-trace --gpu-trace-limit $(GPU_TRACE_LIMIT))

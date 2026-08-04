@@ -5,8 +5,6 @@ export OPENGPU_HOME
 BACKEND ?= auto
 TOOL ?= $(if $(CONFIG_SBT),sbt,mill)
 BUILD_DIR := $(OPENGPU_HOME)/sw/build
-OBJ_DIR := $(BUILD_DIR)/obj-runtime
-RUNTIME_LIB := $(BUILD_DIR)/libgpu-runtime.a
 
 ifeq ($(BACKEND),auto)
   ifeq ($(CONFIG_SPINAL),y)
@@ -19,6 +17,8 @@ ifeq ($(BACKEND),auto)
 else
   HDL_BACKEND := $(BACKEND)
 endif
+OBJ_DIR := $(BUILD_DIR)/obj-runtime/$(HDL_BACKEND)
+RUNTIME_LIB := $(BUILD_DIR)/libgpu-runtime-$(HDL_BACKEND).a
 VBUILD := $(OPENGPU_HOME)/hw/build/verilated/$(HDL_BACKEND)
 VLIB := $(VBUILD)/libVGPUTop.a
 VROOT ?= $(shell verilator -V 2>/dev/null | sed -n 's/^[[:space:]]*VERILATOR_ROOT[[:space:]]*=[[:space:]]*//p' | head -1)
@@ -65,8 +65,8 @@ $(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	@$(CXX) $(HOST_CXXFLAGS) -c -o $@ $<
 ifeq ($(CONFIG_HM),y)
-$(OBJ_DIR)/runtime/rtl/exec.o: $(VLIB)
-$(VLIB):
+$(OBJ_DIR)/runtime/rtl/exec.o: check-vlib
+check-vlib:
 	$(MAKE) -C $(OPENGPU_HOME)/hw BACKEND=$(HDL_BACKEND) TOOL=$(TOOL) verilate
 endif
 $(RUNTIME_LIB): $(RUNTIME_OBJS)
@@ -80,4 +80,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 -include $(RUNTIME_OBJS:.o=.d)
-.PHONY: runtime clean
+.PHONY: runtime clean check-vlib

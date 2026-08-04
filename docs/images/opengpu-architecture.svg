@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
   <title id="title">OpenGPU architecture</title>
-  <desc id="desc">The native host runtime loads an RV32E kernel into physical memory. A selected C ISS or Verilated RTL backend executes the kernel. The RTL contains configurable GPU cores with warp schedulers and SIMT lanes. DiffTest compares reference and RTL memory.</desc>
+  <desc id="desc">The native host runtime stages arguments and programs a DCR-controlled kernel management unit. The KMU dispatches 3D CTAs to configurable GPU cores. Each warp shares a PC, instruction, mask, and path stack while SIMD lanes own registers and coordinates. DiffTest compares C ISS and RTL memory.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#071426"/>
@@ -46,7 +46,7 @@
     <rect x="72" y="434" width="212" height="42" rx="7" fill="#392e4d" stroke="#8366aa"/>
     <text x="178" y="460" class="t" text-anchor="middle">RV32E kernel image</text>
     <rect x="72" y="486" width="212" height="30" rx="6" fill="#392e4d" stroke="#8366aa"/>
-    <text x="178" y="506" class="small" text-anchor="middle">launch metadata + arguments</text>
+    <text x="178" y="506" class="small" text-anchor="middle">per-launch argument scratch</text>
     <rect x="72" y="526" width="212" height="30" rx="6" fill="#392e4d" stroke="#8366aa"/>
     <text x="178" y="546" class="small" text-anchor="middle">heap + stacks + output buffers</text>
   </g>
@@ -55,7 +55,7 @@
   <g filter="url(#shadow)">
     <rect x="378" y="118" width="236" height="116" class="box" fill="#173444" stroke="#4ca9bd"/>
     <text x="496" y="151" class="h" text-anchor="middle">C ISS Reference</text>
-    <text x="496" y="177" class="t" text-anchor="middle">One context per logical hart</text>
+    <text x="496" y="177" class="t" text-anchor="middle">Dynamic launch contexts + CSRs</text>
     <text x="496" y="199" class="small" text-anchor="middle">golden PMEM result</text>
 
     <rect x="378" y="266" width="236" height="155" class="box" fill="#23324b" stroke="#738fbe"/>
@@ -75,31 +75,33 @@
     <text x="712" y="146" class="h">GPUTop</text>
     <text x="1125" y="146" class="small" text-anchor="end">NUM_CORES × NUM_WARPS × NUM_THREADS</text>
 
-    <rect x="712" y="169" width="412" height="171" class="box" fill="url(#core)" stroke="#3b83ba"/>
-    <text x="732" y="197" class="h">GPU Core 0</text>
-    <rect x="734" y="216" width="154" height="92" rx="8" fill="#204d72" stroke="#58a4cf"/>
-    <text x="811" y="240" class="t" text-anchor="middle">Warp scheduler</text>
-    <text x="811" y="261" class="small" text-anchor="middle">round robin</text>
-    <text x="811" y="279" class="small" text-anchor="middle">PC-based issue mask</text>
-    <rect x="908" y="207" width="194" height="110" rx="8" fill="#143858" stroke="#4a8db8"/>
-    <text x="1005" y="231" class="t" text-anchor="middle">Resident warps</text>
-    <rect x="926" y="246" width="48" height="48" rx="6" fill="#25789b"/><rect x="981" y="246" width="48" height="48" rx="6" fill="#25789b"/><rect x="1036" y="246" width="48" height="48" rx="6" fill="#25789b"/>
-    <text x="950" y="266" class="small" text-anchor="middle">lane</text><text x="950" y="282" class="small" text-anchor="middle">0</text>
-    <text x="1005" y="266" class="small" text-anchor="middle">lane</text><text x="1005" y="282" class="small" text-anchor="middle">1</text>
-    <text x="1060" y="274" class="small" text-anchor="middle">…</text>
+    <rect x="712" y="169" width="412" height="68" class="box" fill="#194456" stroke="#48b5c9"/>
+    <text x="732" y="196" class="h">KMU · DCR register bank</text>
+    <text x="732" y="219" class="small">X→Y→Z CTA walker · ready/valid round-robin dispatch · busy/fault</text>
 
-    <rect x="712" y="359" width="412" height="84" class="box" fill="url(#core)" stroke="#3b83ba"/>
-    <text x="732" y="390" class="h">GPU Core 1 … N</text>
-    <text x="732" y="417" class="t">Independent scheduler, PCs, halt state, and 16 × RV32E GPRs per lane</text>
+    <rect x="712" y="253" width="412" height="154" class="box" fill="url(#core)" stroke="#3b83ba"/>
+    <text x="732" y="281" class="h">GPU Core 0 · one resident CTA</text>
+    <rect x="734" y="297" width="154" height="83" rx="8" fill="#204d72" stroke="#58a4cf"/>
+    <text x="811" y="321" class="t" text-anchor="middle">Warp scheduler</text>
+    <text x="811" y="342" class="small" text-anchor="middle">shared PC + mask</text>
+    <text x="811" y="360" class="small" text-anchor="middle">8-entry path stack</text>
+    <rect x="908" y="289" width="194" height="99" rx="8" fill="#143858" stroke="#4a8db8"/>
+    <text x="1005" y="313" class="t" text-anchor="middle">SIMD thread lanes</text>
+    <rect x="926" y="328" width="48" height="42" rx="6" fill="#25789b"/><rect x="981" y="328" width="48" height="42" rx="6" fill="#25789b"/><rect x="1036" y="328" width="48" height="42" rx="6" fill="#25789b"/>
+    <text x="950" y="354" class="small" text-anchor="middle">lane 0</text>
+    <text x="1005" y="354" class="small" text-anchor="middle">lane 1</text>
+    <text x="1060" y="354" class="small" text-anchor="middle">…</text>
 
-    <rect x="712" y="462" width="196" height="99" rx="10" fill="#19384a" stroke="#3897a7"/>
-    <text x="810" y="491" class="h" text-anchor="middle">Instruction path</text>
-    <text x="810" y="517" class="small" text-anchor="middle">fetch → decode → execute</text>
-    <text x="810" y="536" class="small" text-anchor="middle">RV32E + mhartid + ebreak</text>
-    <rect x="928" y="462" width="196" height="99" rx="10" fill="#3b2e3b" stroke="#a06e96"/>
-    <text x="1026" y="491" class="h" text-anchor="middle">DPI memory</text>
-    <text x="1026" y="517" class="small" text-anchor="middle">instruction reads</text>
-    <text x="1026" y="536" class="small" text-anchor="middle">lane-serialized loads/stores</text>
+    <rect x="712" y="423" width="412" height="54" class="box" fill="url(#core)" stroke="#3b83ba"/>
+    <text x="732" y="446" class="h">GPU Core 1 … N</text>
+    <text x="732" y="466" class="small">Per-warp control · per-lane GPRs, coordinates, results, and addresses</text>
+
+    <rect x="712" y="493" width="196" height="68" rx="10" fill="#19384a" stroke="#3897a7"/>
+    <text x="810" y="519" class="h" text-anchor="middle">Instruction path</text>
+    <text x="810" y="542" class="small" text-anchor="middle">RV32E · topology CSRs · ebreak</text>
+    <rect x="928" y="493" width="196" height="68" rx="10" fill="#3b2e3b" stroke="#a06e96"/>
+    <text x="1026" y="519" class="h" text-anchor="middle">DPI memory</text>
+    <text x="1026" y="542" class="small" text-anchor="middle">active-lane serialized access</text>
   </g>
 
   <!-- Flows -->
@@ -108,7 +110,7 @@
   <path d="M308 461 C342 461 340 176 378 176" class="flow"/>
   <path d="M308 492 C346 492 340 344 378 344" class="flow"/>
   <path d="M614 344 H684" class="flow"/>
-  <text x="649" y="334" class="small" text-anchor="middle">launch</text>
+  <text x="649" y="334" class="small" text-anchor="middle">DCR + launch</text>
   <path d="M928 544 C650 650 410 620 284 548" class="flow"/>
   <text x="610" y="647" class="small" text-anchor="middle">DPI reads / writes</text>
 

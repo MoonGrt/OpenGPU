@@ -25,6 +25,13 @@ typedef struct {
   uint32_t num_harts;
 } gpu_device_config_t;
 
+typedef struct {
+  uint32_t grid_dim[3];
+  uint32_t block_dim[3];
+  const void *args_host;
+  size_t args_size;
+} gpu_launch_info_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -53,7 +60,7 @@ gpu_result_t gpu_kernel_load_memory(
     gpu_kernel_h *kernel);
 gpu_result_t gpu_launch(
     gpu_device_h device, gpu_kernel_h kernel,
-    const void *arguments, size_t argument_size);
+    const gpu_launch_info_t *info);
 gpu_result_t gpu_wait(gpu_device_h device);
 
 #ifdef __cplusplus

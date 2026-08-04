@@ -2,7 +2,7 @@ SPINAL_MAIN := gpu.spinal.GPUTop
 SPINAL_SRCS := $(shell find $(OPENGPU_HOME)/hw/spinal/src -name '*.scala')
 RTL_FINAL := $(RTL_DIR)/GPUTop.v
 
-$(RTL_FINAL): $(SPINAL_SRCS)
+$(RTL_FINAL): $(SPINAL_SRCS) $(OPENGPU_HOME)/.config
 	@echo "+ SPINAL $@"
 	@mkdir -p $(RTL_DIR)
 	@if test "$(TOOL)" = sbt; then \

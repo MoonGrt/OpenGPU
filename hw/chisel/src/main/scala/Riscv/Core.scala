@@ -2,132 +2,117 @@ package gpu.riscv
 
 import chisel3._
 import chisel3.util._
-import gpu.perip.mem.{DataBus, InstBus, SimDataMem, SimInstMem}
-import gpu.util.{DpiGpuStoreTraceBB, DpiGpuTraceBB}
+import gpu.CtaRequest
+import gpu.perip.mem.{DataBus, InstBus}
 
-
-/** A compact SIMT-style RV32E core.
-  *
-  * The core owns one shared fetch/decode/execute path and a parameterized set
-  * of architectural contexts arranged as warps and threads. A warp is selected
-  * round-robin. Threads in that warp which currently share the same PC form the
-  * issue mask and share one instruction fetch. Per-thread PCs allow divergent
-  * paths to make progress independently and naturally reconverge when their PCs
-  * become equal again.
-  *
-  * Memory operations are serialized over the shared data port one active lane
-  * at a time. This keeps the first implementation small while preserving the
-  * WARPS/THREADS programming model and precise per-thread state.
-  */
-class Core(
-  coreId: Int,
-  numWarps: Int,
-  numThreads: Int,
-  resetPc: BigInt = 0x81000000L,
-  enableGpuTrace: Boolean = true
-) extends Module {
+class Core(coreId: Int, numWarps: Int, numThreads: Int) extends Module {
   private val DataWidth = 32
-  require(numWarps >= 1 && isPow2(numWarps), "numWarps must be a power of two")
-  require(numThreads >= 1 && isPow2(numThreads), "numThreads must be a power of two")
-  require(resetPc >= 0 && resetPc < (BigInt(1) << DataWidth))
-
+  private val NumRegs = 16
+  private val NumContexts = numWarps * numThreads
   private val WarpBits = math.max(1, log2Ceil(numWarps))
   private val ThreadBits = math.max(1, log2Ceil(numThreads))
-  private val NumRegs = 16  // riscv32e
-  private val NumContexts = numWarps * numThreads
   private val ContextBits = math.max(1, log2Ceil(NumContexts))
-  private val GprIndexBits = math.max(1, log2Ceil(NumContexts * NumRegs))
+  private val RegBits = math.max(1, log2Ceil(NumContexts * NumRegs))
+  private val StackDepth = 8
+  private val StackBits = 4
+  private val StackIndexBits = math.max(1, log2Ceil(numWarps * StackDepth))
 
   val io = IO(new Bundle {
-    val enable = Input(Bool())
+    val cta = Flipped(Decoupled(new CtaRequest))
     val ibus = new InstBus
     val dbus = new DataBus
-    val done = Output(Bool())
     val busy = Output(Bool())
+    val fault = Output(Bool())
+    val done = Output(Bool())
     val activeWarps = Output(UInt(numWarps.W))
     val issueWarp = Output(UInt(WarpBits.W))
     val issueMask = Output(UInt(numThreads.W))
   })
 
-  // Keep the arrays flat. Besides producing simpler RAM-like RTL, scalar
-  // dynamic indexing avoids packed-array muxes rejected by the Verilog
-  // lowering options used by MEMU.
-  val pcs = RegInit(VecInit(Seq.fill(NumContexts)(resetPc.U(DataWidth.W))))
-  val halted = RegInit(VecInit(Seq.fill(NumContexts)(false.B)))
-  val gprs = RegInit(VecInit(
-    Seq.fill(NumContexts * NumRegs)(0.U(DataWidth.W))))
+  val warpPc = Reg(Vec(numWarps, UInt(32.W)))
+  val warpMask = Reg(Vec(numWarps, UInt(numThreads.W)))
+  val warpValid = RegInit(VecInit(Seq.fill(numWarps)(false.B)))
+  val stackSp = RegInit(VecInit(Seq.fill(numWarps)(0.U(StackBits.W))))
+  val stackPc = Reg(Vec(numWarps * StackDepth, UInt(32.W)))
+  val stackMask = Reg(Vec(numWarps * StackDepth, UInt(numThreads.W)))
+  val gprs = RegInit(VecInit(Seq.fill(NumContexts * NumRegs)(0.U(32.W))))
+  val threadX = Reg(Vec(NumContexts, UInt(32.W)))
+  val threadY = Reg(Vec(NumContexts, UInt(32.W)))
+  val threadZ = Reg(Vec(NumContexts, UInt(32.W)))
+  val globalId = Reg(Vec(NumContexts, UInt(32.W)))
+  val blockIdx = Reg(Vec(3, UInt(32.W)))
+  val blockDim = Reg(Vec(3, UInt(32.W)))
+  val gridDim = Reg(Vec(3, UInt(32.W)))
+  val argsAddr = Reg(UInt(32.W))
 
-  val warpActive = Wire(Vec(numWarps, Bool()))
-  for (w <- 0 until numWarps) {
-    warpActive(w) := !VecInit((0 until numThreads).map { t =>
-      halted(w * numThreads + t)
-    }).asUInt.andR
-  }
-  io.activeWarps := warpActive.asUInt
-  io.done := halted.asUInt.andR
-  io.busy := !io.done
+  val ctaActive = RegInit(false.B)
+  val fault = RegInit(false.B)
+  io.busy := ctaActive
+  io.done := !ctaActive
+  io.fault := fault
+  io.cta.ready := !ctaActive
+  io.activeWarps := warpValid.asUInt
 
-  private val sSchedule :: sFetchRsp :: sExecute :: sMemReq :: sMemRsp :: Nil =
-    Enum(5)
+  val sSchedule :: sFetch :: sExecute :: sMemReq :: sMemResp :: Nil = Enum(5)
   val state = RegInit(sSchedule)
   val rrWarp = RegInit(0.U(WarpBits.W))
-  val issueWarp = Reg(UInt(WarpBits.W))
-  val issueMask = Reg(UInt(numThreads.W))
-  val issuePc = Reg(UInt(DataWidth.W))
-  val issueInst = Reg(UInt(DataWidth.W))
+  val issueWarp = RegInit(0.U(WarpBits.W))
+  val issueMask = RegInit(0.U(numThreads.W))
+  val issuePc = Reg(UInt(32.W))
+  val issueInst = Reg(UInt(32.W))
   val memThread = RegInit(0.U(ThreadBits.W))
-
   io.issueWarp := issueWarp
   io.issueMask := issueMask
-  dontTouch(state)
-  dontTouch(rrWarp)
-  dontTouch(pcs)
-  dontTouch(halted)
 
-  // Round-robin warp selection. Duplicating and shifting the active mask makes
-  // bit zero correspond to rrWarp while retaining a cheap priority encoder.
-  val activeBits = warpActive.asUInt
-  val rotatedActive = (Cat(activeBits, activeBits) >> rrWarp)(numWarps - 1, 0)
-  val selectedOffset = PriorityEncoder(rotatedActive)
-  val selectedWarp = (rrWarp + selectedOffset)(WarpBits - 1, 0)
-  val selectedHalted = VecInit((0 until numThreads).map { t =>
-    if (NumContexts == 1) {
-      halted(0)
-    } else {
-      val context = (selectedWarp * numThreads.U + t.U)(ContextBits - 1, 0)
-      halted(context)
+  when(io.cta.fire) {
+    ctaActive := true.B
+    fault := false.B
+    state := sSchedule
+    rrWarp := 0.U
+    blockIdx := io.cta.bits.blockIdx
+    blockDim := io.cta.bits.blockDim
+    gridDim := io.cta.bits.gridDim
+    argsAddr := io.cta.bits.argsAddr
+    val blockLinear = ((io.cta.bits.blockIdx(2) * io.cta.bits.gridDim(1)) +
+      io.cta.bits.blockIdx(1)) * io.cta.bits.gridDim(0) + io.cta.bits.blockIdx(0)
+    for (w <- 0 until numWarps) {
+      warpPc(w) := io.cta.bits.startupPc
+      stackSp(w) := 0.U
+      warpMask(w) := VecInit((0 until numThreads).map(t =>
+        (w * numThreads + t).U < io.cta.bits.blockSize)).asUInt
+      warpValid(w) := (w * numThreads).U < io.cta.bits.blockSize
     }
-  }).asUInt
-  val selectedThread =
-    if (numThreads == 1) 0.U(ThreadBits.W) else PriorityEncoder(~selectedHalted)
-  val selectedContext =
-    (selectedWarp * numThreads.U + selectedThread)(ContextBits - 1, 0)
-  val selectedPc = if (NumContexts == 1) pcs(0) else pcs(selectedContext)
-  val selectedMask = Wire(UInt(numThreads.W))
-  selectedMask := VecInit((0 until numThreads).map { t =>
-    if (NumContexts == 1) {
-      !halted(0) && pcs(0) === selectedPc
-    } else {
-      val context = (selectedWarp * numThreads.U + t.U)(ContextBits - 1, 0)
-      !halted(context) && pcs(context) === selectedPc
+    for (i <- 0 until NumContexts) {
+      threadX(i) := i.U % io.cta.bits.blockDim(0)
+      threadY(i) := (i.U / io.cta.bits.blockDim(0)) % io.cta.bits.blockDim(1)
+      threadZ(i) := i.U / (io.cta.bits.blockDim(0) * io.cta.bits.blockDim(1))
+      globalId(i) := blockLinear * io.cta.bits.blockSize + i.U
     }
-  }).asUInt
+    gprs.foreach(_ := 0.U)
+  }
 
-  io.ibus.req.valid := io.enable && state === sSchedule && activeBits.orR
-  io.ibus.req.bits.addr := selectedPc
-  io.ibus.resp.ready := state === sFetchRsp
+  val activeBits = warpValid.asUInt
+  val rotated = (Cat(activeBits, activeBits) >> rrWarp)(numWarps - 1, 0)
+  val selectedWarp = (rrWarp + PriorityEncoder(rotated))(WarpBits - 1, 0)
 
+  io.ibus.req.valid := ctaActive && state === sSchedule && activeBits.orR
+  io.ibus.req.bits.addr := warpPc(selectedWarp)
+  io.ibus.resp.ready := state === sFetch
   io.dbus.req.valid := false.B
   io.dbus.req.bits := 0.U.asTypeOf(io.dbus.req.bits)
-  io.dbus.resp.ready := state === sMemRsp
+  io.dbus.resp.ready := state === sMemResp
 
-  when(state === sSchedule && io.ibus.req.fire) {
-    issueWarp := selectedWarp
-    issueMask := selectedMask
-    issuePc := selectedPc
-    state := sFetchRsp
+  when(ctaActive && state === sSchedule) {
+    when(activeBits.orR) {
+      when(io.ibus.req.fire) {
+        issueWarp := selectedWarp
+        issueMask := warpMask(selectedWarp)
+        issuePc := warpPc(selectedWarp)
+        state := sFetch
+      }
+    }.otherwise { ctaActive := false.B }
   }
-  when(state === sFetchRsp && io.ibus.resp.fire) {
+  when(state === sFetch && io.ibus.resp.fire) {
     issueInst := io.ibus.resp.bits.data
     state := sExecute
   }
@@ -138,264 +123,169 @@ class Core(
   val rs1 = issueInst(19, 15)
   val rs2 = issueInst(24, 20)
   val funct7 = issueInst(31, 25)
-
-  val isLoad = opcode === "b0000011".U
-  val isStore = opcode === "b0100011".U
-  val isMemory = isLoad || isStore
-  val isEbreak = issueInst === "h00100073".U
-  val isMhartid = opcode === "b1110011".U && funct3 === 2.U &&
-    rs1 === 0.U && issueInst(31, 20) === "hf14".U
-
+  val csr = issueInst(31, 20)
   def sext(value: UInt, width: Int): UInt =
-    Cat(Fill(DataWidth - width, value(width - 1)), value(width - 1, 0))
-
+    Cat(Fill(32 - width, value(width - 1)), value(width - 1, 0))
   val immI = sext(issueInst(31, 20), 12)
   val immS = sext(Cat(issueInst(31, 25), issueInst(11, 7)), 12)
-  val immB = Cat(
-    Fill(19, issueInst(31)), issueInst(31), issueInst(7),
+  val immB = Cat(Fill(19, issueInst(31)), issueInst(31), issueInst(7),
     issueInst(30, 25), issueInst(11, 8), 0.U(1.W))
   val immU = Cat(issueInst(31, 12), 0.U(12.W))
-  val immJ = Cat(
-    Fill(11, issueInst(31)), issueInst(31), issueInst(19, 12),
+  val immJ = Cat(Fill(11, issueInst(31)), issueInst(31), issueInst(19, 12),
     issueInst(20), issueInst(30, 21), 0.U(1.W))
-
-  val usesRd = Seq(
-    "b0110111".U, "b0010111".U, "b0010011".U, "b0110011".U,
-    "b0000011".U, "b1101111".U, "b1100111".U, "b1110011".U
-  ).map(opcode === _).reduce(_ || _)
-  val usesRs1 = Seq(
-    "b0010011".U, "b0110011".U, "b0000011".U, "b0100011".U,
-    "b1100011".U, "b1100111".U
-  ).map(opcode === _).reduce(_ || _)
-  val usesRs2 = Seq(
-    "b0110011".U, "b0100011".U, "b1100011".U
-  ).map(opcode === _).reduce(_ || _)
-  val badRegister = (usesRd && rd(4)) || (usesRs1 && rs1(4)) ||
-    (usesRs2 && rs2(4))
+  val isLoad = opcode === "b0000011".U
+  val isStore = opcode === "b0100011".U
+  val isBranch = opcode === "b1100011".U
+  val isEbreak = issueInst === "h00100073".U
+  val usesRd = Seq(0x37,0x17,0x13,0x33,0x03,0x6f,0x67,0x73)
+    .map(x => opcode === x.U).reduce(_ || _)
+  val usesRs1 = Seq(0x13,0x33,0x03,0x23,0x63,0x67)
+    .map(x => opcode === x.U).reduce(_ || _)
+  val usesRs2 = Seq(0x33,0x23,0x63).map(x => opcode === x.U).reduce(_ || _)
+  val badReg = (usesRd && rd(4)) || (usesRs1 && rs1(4)) || (usesRs2 && rs2(4))
 
   def nextWarp(): Unit = {
-    if (numWarps == 1) {
-      rrWarp := 0.U
-    } else {
-      rrWarp := Mux(issueWarp === (numWarps - 1).U, 0.U, issueWarp + 1.U)
-    }
+    rrWarp := Mux(issueWarp === (numWarps - 1).U, 0.U, issueWarp + 1.U)
     state := sSchedule
   }
+  def context(t: Int): UInt =
+    (issueWarp * numThreads.U + t.U)(ContextBits - 1, 0)
+  def regBase(c: UInt): UInt = (c * NumRegs.U)(RegBits - 1, 0)
 
-  // Shared ALU/decode, applied to every lane in the current issue mask.
+  val branchTaken = Wire(Vec(numThreads, Bool()))
+  for (t <- 0 until numThreads) {
+    val c = context(t); val base = regBase(c)
+    val a = gprs((base + rs1(3,0))(RegBits-1,0))
+    val b = gprs((base + rs2(3,0))(RegBits-1,0))
+    branchTaken(t) := MuxLookup(funct3, false.B)(Seq(
+      0.U -> (a === b), 1.U -> (a =/= b), 4.U -> (a.asSInt < b.asSInt),
+      5.U -> (a.asSInt >= b.asSInt), 6.U -> (a < b), 7.U -> (a >= b)))
+  }
+  val takenMask = branchTaken.asUInt & issueMask
+  val fallMask = ~branchTaken.asUInt & issueMask
+  val branchSupported = Seq(0,1,4,5,6,7).map(funct3 === _.U).reduce(_ || _)
+
+  val firstLane = PriorityEncoder(issueMask)
+  val firstContext = (issueWarp * numThreads.U + firstLane)(ContextBits-1,0)
+  val firstBase = regBase(firstContext)
+  val firstTarget = (gprs((firstBase + rs1(3,0))(RegBits-1,0)) + immI) & "hfffffffe".U
+  val jalrDivergent = VecInit((0 until numThreads).map { t =>
+    val c = context(t); val base = regBase(c)
+    issueMask(t) && (((gprs((base + rs1(3,0))(RegBits-1,0)) + immI) &
+      "hfffffffe".U) =/= firstTarget)
+  }).asUInt.orR
+
+  val csrSupported = Seq(0xf14,0xcc0,0xcc1,0xcc2,0xcc3,0xcc4,0xcc5,
+    0xcc6,0xcc7,0xcc8,0xcc9,0xcca,0xccb,0xccc,0xccd,0xcce,0xccf)
+    .map(csr === _.U).reduce(_ || _)
+  val opcodeSupported = Seq(0x37,0x17,0x13,0x33,0x6f,0x67)
+    .map(opcode === _.U).reduce(_ || _) ||
+    (opcode === 0x73.U && funct3 === 2.U && rs1 === 0.U && csrSupported)
+
   when(state === sExecute) {
-    when(isMemory && !badRegister) {
-      memThread := 0.U
-      state := sMemReq
-    }.otherwise {
-      for (t <- 0 until numThreads) {
-        when(issueMask(t)) {
-          val context =
-            (issueWarp * numThreads.U + t.U)(ContextBits - 1, 0)
-          val regBase =
-            (context * NumRegs.U)(GprIndexBits - 1, 0)
-          val rs1Index =
-            (regBase + rs1(3, 0))(GprIndexBits - 1, 0)
-          val rs2Index =
-            (regBase + rs2(3, 0))(GprIndexBits - 1, 0)
-          val a = Mux(usesRs1, gprs(rs1Index), 0.U)
-          val b = Mux(usesRs2, gprs(rs2Index), 0.U)
-          val result = WireDefault(0.U(DataWidth.W))
-          val nextPc = WireDefault(issuePc + 4.U)
-          val writeRd = WireDefault(usesRd)
-          val supported = WireDefault(false.B)
-
-          switch(opcode) {
-            is("b0110111".U) {
-              supported := true.B
-              result := immU
-            } // LUI
-            is("b0010111".U) {
-              supported := true.B
-              result := issuePc + immU
-            } // AUIPC
-            is("b0010011".U) { // OP-IMM
-              supported := true.B
-              switch(funct3) {
-                is(0.U) { result := a + immI }
-                is(2.U) { result := (a.asSInt < immI.asSInt).asUInt }
-                is(3.U) { result := a < immI }
-                is(4.U) { result := a ^ immI }
-                is(6.U) { result := a | immI }
-                is(7.U) { result := a & immI }
-                is(1.U) { result := a << issueInst(24, 20) }
-                is(5.U) {
-                  result := Mux(issueInst(30),
-                    (a.asSInt >> issueInst(24, 20)).asUInt,
-                    a >> issueInst(24, 20))
-                }
-              }
-            }
-            is("b0110011".U) { // OP
-              supported := true.B
-              switch(funct3) {
-                is(0.U) { result := Mux(funct7 === "b0100000".U, a - b, a + b) }
-                is(1.U) { result := a << b(4, 0) }
-                is(2.U) { result := (a.asSInt < b.asSInt).asUInt }
-                is(3.U) { result := a < b }
-                is(4.U) { result := a ^ b }
-                is(5.U) {
-                  result := Mux(funct7 === "b0100000".U,
-                    (a.asSInt >> b(4, 0)).asUInt, a >> b(4, 0))
-                }
-                is(6.U) { result := a | b }
-                is(7.U) { result := a & b }
-              }
-            }
-            is("b1100011".U) { // BRANCH
-              supported := true.B
-              writeRd := false.B
-              val take = WireDefault(false.B)
-              switch(funct3) {
-                is(0.U) { take := a === b }
-                is(1.U) { take := a =/= b }
-                is(4.U) { take := a.asSInt < b.asSInt }
-                is(5.U) { take := a.asSInt >= b.asSInt }
-                is(6.U) { take := a < b }
-                is(7.U) { take := a >= b }
-              }
-              nextPc := Mux(take, issuePc + immB, issuePc + 4.U)
-            }
-            is("b1101111".U) { // JAL
-              supported := true.B
-              result := issuePc + 4.U
-              nextPc := issuePc + immJ
-            }
-            is("b1100111".U) { // JALR
-              supported := true.B
-              result := issuePc + 4.U
-              nextPc := (a + immI) & "hfffffffe".U
-            }
-            is("b1110011".U) {
-              when(isEbreak) {
-                supported := true.B
-                writeRd := false.B
-                if (NumContexts == 1) halted(0) := true.B
-                else halted(context) := true.B
-              }.elsewhen(isMhartid) {
-                supported := true.B
-                result := ((coreId * numWarps * numThreads) +
-                  (t + 0)).U + issueWarp * numThreads.U
-              }
-            }
-          }
-
-          when(badRegister || !supported) {
-            if (NumContexts == 1) halted(0) := true.B
-            else halted(context) := true.B
-          }.elsewhen(!isEbreak) {
-            if (NumContexts == 1) pcs(0) := nextPc
-            else pcs(context) := nextPc
-            when(writeRd && rd =/= 0.U) {
-              val rdIndex =
-                (regBase + rd(3, 0))(GprIndexBits - 1, 0)
-              gprs(rdIndex) := result
-            }
-          }
-          gprs(regBase) := 0.U
+    when(badReg) { fault := true.B; ctaActive := false.B; state := sSchedule }
+    .elsewhen(isLoad || isStore) { memThread := 0.U; state := sMemReq }
+    .elsewhen(isEbreak) {
+      when(stackSp(issueWarp) =/= 0.U) {
+        val index = (issueWarp * StackDepth.U + stackSp(issueWarp) - 1.U)(
+          StackIndexBits - 1, 0)
+        stackSp(issueWarp) := stackSp(issueWarp) - 1.U
+        warpPc(issueWarp) := stackPc(index)
+        warpMask(issueWarp) := stackMask(index)
+      }.otherwise { warpValid(issueWarp) := false.B }
+      nextWarp()
+    }.elsewhen(isBranch) {
+      when(!branchSupported) { fault := true.B; ctaActive := false.B }
+      .elsewhen(takenMask.orR && fallMask.orR) {
+        when(stackSp(issueWarp) === StackDepth.U) {
+          fault := true.B; ctaActive := false.B
+        }.otherwise {
+          val index = (issueWarp * StackDepth.U + stackSp(issueWarp))(
+            StackIndexBits - 1, 0)
+          stackPc(index) := issuePc + immB
+          stackMask(index) := takenMask
+          stackSp(issueWarp) := stackSp(issueWarp) + 1.U
+          warpPc(issueWarp) := issuePc + 4.U
+          warpMask(issueWarp) := fallMask
         }
-      }
-      nextWarp()
-    }
-  }
-
-  val memContext =
-    (issueWarp * numThreads.U + memThread)(ContextBits - 1, 0)
-  val memRegBase =
-    (memContext * NumRegs.U)(GprIndexBits - 1, 0)
-  val memRs1Index =
-    (memRegBase + rs1(3, 0))(GprIndexBits - 1, 0)
-  val memRs2Index =
-    (memRegBase + rs2(3, 0))(GprIndexBits - 1, 0)
-  val memRdIndex =
-    (memRegBase + rd(3, 0))(GprIndexBits - 1, 0)
-  val memA = gprs(memRs1Index)
-  val memB = gprs(memRs2Index)
-  val memAddr = memA + Mux(isLoad, immI, immS)
-  val memOffset = memAddr(1, 0)
-  val memSize = MuxLookup(funct3, 2.U)(Seq(
-    0.U -> 0.U, 1.U -> 1.U, 2.U -> 2.U,
-    4.U -> 0.U, 5.U -> 1.U))
-  val storeMask = MuxLookup(funct3, 0.U(4.W))(Seq(
-    0.U -> (1.U(4.W) << memOffset),
-    1.U -> (3.U(4.W) << memOffset),
-    2.U -> "b1111".U))
-
-  def advanceMemoryThread(): Unit = {
-    if (numThreads == 1) {
-      nextWarp()
-    } else {
-      when(memThread === (numThreads - 1).U) {
-        nextWarp()
+      }.elsewhen(takenMask.orR) {
+        warpPc(issueWarp) := issuePc + immB; warpMask(issueWarp) := takenMask
       }.otherwise {
-        memThread := memThread + 1.U
-        state := sMemReq
+        warpPc(issueWarp) := issuePc + 4.U; warpMask(issueWarp) := fallMask
       }
-    }
-  }
-
-  when(state === sMemReq) {
-    val memoryLaneActive =
-      if (numThreads == 1) issueMask(0) else issueMask(memThread)
-    when(!memoryLaneActive) {
-      advanceMemoryThread()
+      nextWarp()
     }.otherwise {
-      io.dbus.req.valid := io.enable
-      io.dbus.req.bits.ren := isLoad
-      io.dbus.req.bits.wen := isStore
-      io.dbus.req.bits.size := memSize
-      io.dbus.req.bits.mask := storeMask
-      io.dbus.req.bits.addr := Cat(memAddr(31, 2), 0.U(2.W))
-      io.dbus.req.bits.wdata := memB << (memOffset << 3)
-      when(io.dbus.req.fire) {
-        state := sMemRsp
+      for (t <- 0 until numThreads) when(issueMask(t)) {
+        val c = context(t); val base = regBase(c)
+        val a = gprs((base + rs1(3,0))(RegBits-1,0))
+        val b = gprs((base + rs2(3,0))(RegBits-1,0))
+        val aluImm = MuxLookup(funct3, 0.U)(Seq(
+          0.U -> (a + immI), 2.U -> (a.asSInt < immI.asSInt).asUInt,
+          3.U -> (a < immI), 4.U -> (a ^ immI), 6.U -> (a | immI),
+          7.U -> (a & immI), 1.U -> (a << issueInst(24,20)),
+          5.U -> Mux(issueInst(30), (a.asSInt >> issueInst(24,20)).asUInt,
+            a >> issueInst(24,20))))
+        val aluReg = MuxLookup(funct3, 0.U)(Seq(
+          0.U -> Mux(funct7 === "b0100000".U, a-b, a+b), 1.U -> (a << b(4,0)),
+          2.U -> (a.asSInt < b.asSInt).asUInt, 3.U -> (a < b), 4.U -> (a ^ b),
+          5.U -> Mux(funct7 === "b0100000".U,(a.asSInt >> b(4,0)).asUInt,a >> b(4,0)),
+          6.U -> (a | b), 7.U -> (a & b)))
+        val csrValue = MuxLookup(csr, 0.U)(Seq(
+          "hf14".U -> globalId(c), "hcc0".U -> threadX(c), "hcc1".U -> threadY(c),
+          "hcc2".U -> threadZ(c), "hcc3".U -> blockIdx(0), "hcc4".U -> blockIdx(1),
+          "hcc5".U -> blockIdx(2), "hcc6".U -> blockDim(0), "hcc7".U -> blockDim(1),
+          "hcc8".U -> blockDim(2), "hcc9".U -> gridDim(0), "hcca".U -> gridDim(1),
+          "hccb".U -> gridDim(2), "hccc".U -> argsAddr,
+          "hccd".U -> ((coreId*numWarps*numThreads).U +
+            (issueWarp * numThreads.U) + t.U),
+          "hcce".U -> issueWarp, "hccf".U -> t.U))
+        val result = MuxLookup(opcode, 0.U)(Seq(
+          "b0110111".U -> immU, "b0010111".U -> (issuePc+immU),
+          "b0010011".U -> aluImm, "b0110011".U -> aluReg,
+          "b1101111".U -> (issuePc+4.U), "b1100111".U -> (issuePc+4.U),
+          "b1110011".U -> csrValue))
+        when(usesRd && rd =/= 0.U) { gprs((base + rd(3,0))(RegBits-1,0)) := result }
+        gprs(base) := 0.U
       }
+      when(!opcodeSupported || (opcode === "b1100111".U && jalrDivergent)) {
+        fault := true.B; ctaActive := false.B
+      }.otherwise {
+        warpPc(issueWarp) := MuxLookup(opcode, issuePc + 4.U)(Seq(
+          "b1101111".U -> (issuePc + immJ), "b1100111".U -> firstTarget))
+      }
+      nextWarp()
     }
   }
 
-  when(state === sMemRsp && io.dbus.resp.fire) {
-    val shifted = io.dbus.resp.bits.rdata >> (memOffset << 3)
-    val loadData = MuxLookup(funct3, io.dbus.resp.bits.rdata)(Seq(
-      0.U -> Cat(Fill(24, shifted(7)), shifted(7, 0)),
-      1.U -> Cat(Fill(16, shifted(15)), shifted(15, 0)),
-      2.U -> io.dbus.resp.bits.rdata,
-      4.U -> Cat(0.U(24.W), shifted(7, 0)),
-      5.U -> Cat(0.U(16.W), shifted(15, 0))))
-    when(isLoad && rd =/= 0.U) {
-      gprs(memRdIndex) := loadData
-    }
-    gprs(memRegBase) := 0.U
-    if (NumContexts == 1) pcs(0) := issuePc + 4.U
-    else pcs(memContext) := issuePc + 4.U
-    advanceMemoryThread()
+  val memContext = (issueWarp * numThreads.U + memThread)(ContextBits-1,0)
+  val memBase = regBase(memContext)
+  val memAddr = gprs((memBase+rs1(3,0))(RegBits-1,0)) + Mux(isLoad,immI,immS)
+  val memOffset = memAddr(1,0)
+  io.dbus.req.bits.ren := isLoad
+  io.dbus.req.bits.wen := isStore
+  io.dbus.req.bits.size := MuxLookup(funct3,2.U)(Seq(0.U->0.U,1.U->1.U,2.U->2.U,4.U->0.U,5.U->1.U))
+  io.dbus.req.bits.mask := MuxLookup(funct3,0.U(4.W))(Seq(
+    0.U->(1.U(4.W)<<memOffset),1.U->(3.U(4.W)<<memOffset),2.U->"b1111".U))
+  io.dbus.req.bits.addr := Cat(memAddr(31,2),0.U(2.W))
+  io.dbus.req.bits.wdata := gprs((memBase+rs2(3,0))(RegBits-1,0)) << (memOffset<<3)
+
+  def advanceMem(): Unit = {
+    when(memThread === (numThreads-1).U) {
+      warpPc(issueWarp) := issuePc+4.U; nextWarp()
+    }.otherwise { memThread := memThread+1.U; state := sMemReq }
   }
-
-  if (enableGpuTrace) {
-    for (w <- 0 until numWarps; t <- 0 until numThreads) {
-      val trace = Module(new DpiGpuTraceBB)
-      val nonMemCommit = state === sExecute && !isMemory &&
-        issueWarp === w.U && issueMask(t)
-      val memCommit = state === sMemRsp && io.dbus.resp.fire &&
-        issueWarp === w.U && memThread === t.U
-      trace.io.clk := clock
-      trace.io.en := !reset.asBool && (nonMemCommit || memCommit)
-      trace.io.hartid := (coreId * numWarps * numThreads + w * numThreads + t).U
-      trace.io.pc := issuePc
-      trace.io.inst := issueInst
-    }
-
-    val storeTrace = Module(new DpiGpuStoreTraceBB)
-    storeTrace.io.clk := clock
-    storeTrace.io.en := state === sMemReq && io.dbus.req.fire && isStore
-    storeTrace.io.hartid :=
-      (coreId * numWarps * numThreads).U + issueWarp * numThreads.U + memThread
-    storeTrace.io.addr := memAddr
-    storeTrace.io.mask := storeMask
-    storeTrace.io.data := memB
+  when(state === sMemReq) {
+    when(!issueMask(memThread)) { advanceMem() }
+    .otherwise { io.dbus.req.valid := true.B; when(io.dbus.req.fire){state:=sMemResp} }
+  }
+  when(state === sMemResp && io.dbus.resp.fire) {
+    val shifted = io.dbus.resp.bits.rdata >> (memOffset<<3)
+    val loaded = MuxLookup(funct3,0.U)(Seq(
+      0.U->Cat(Fill(24,shifted(7)),shifted(7,0)),
+      1.U->Cat(Fill(16,shifted(15)),shifted(15,0)),2.U->io.dbus.resp.bits.rdata,
+      4.U->Cat(0.U(24.W),shifted(7,0)),5.U->Cat(0.U(16.W),shifted(15,0))))
+    when(isLoad && rd=/=0.U){gprs((memBase+rd(3,0))(RegBits-1,0)):=loaded}
+    gprs(memBase):=0.U
+    advanceMem()
   }
 }

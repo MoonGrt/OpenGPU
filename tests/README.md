@@ -10,10 +10,12 @@ Current cases:
 - `vecadd`: 35-element integer addition, exercising an irregular work size.
 - `vecsub`: 17-element integer subtraction.
 - `bitxor`: 19-element bitwise XOR with boundary-pattern inputs.
-- `sizes`: repeated vecadd launches at N=1, 2, 3, 35, and 64, plus Runtime
-  allocator and error-path checks.
-- `topology`: validates the core/warp/thread decomposition of every `mhartid`.
-- `divergence`: sends even and odd lanes down different control-flow paths.
+- `sizes`: repeated vecadd launches with changing argument contents and sizes,
+  plus Runtime validation, allocator checks, illegal instructions, divergent
+  indirect jumps, and path-stack overflow fault handling.
+- `topology`: validates 3D thread/block/grid CSRs, global IDs, physical IDs,
+  CTA reuse, and a partial final warp.
+- `divergence`: covers uniform and nested divergent branches and path restoration.
 
 Build every image:
 

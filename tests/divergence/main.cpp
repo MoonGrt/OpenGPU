@@ -19,13 +19,18 @@ int main(int argc, char **argv) {
   CHECK(gpu_mem_alloc(dev, cfg.num_harts * sizeof(app_u32), &output_addr));
   CHECK(gpu_kernel_load_file(dev, path, &kernel));
   kernel_arg_t args = {output_addr};
-  CHECK(gpu_launch(dev, kernel, &args, sizeof(args)));
+  unsigned block = cfg.warps_per_core * cfg.threads_per_warp;
+  gpu_launch_info_t launch = {
+    {cfg.physical_cores, 1, 1}, {block, 1, 1}, &args, sizeof(args)};
+  CHECK(gpu_launch(dev, kernel, &launch));
   CHECK(gpu_wait(dev));
   std::vector<app_u32> output(cfg.num_harts);
   CHECK(gpu_mem_read(dev, output.data(), output_addr,
       output.size() * sizeof(app_u32)));
   for (unsigned id = 0; id < cfg.num_harts; ++id) {
-    app_u32 expected = (id & 1 ? 0x5a5a0000u : 0xa5a50000u) | id;
+    static const app_u32 paths[4] = {
+      0x44000000u, 0x11000000u, 0x22000000u, 0x33000000u};
+    app_u32 expected = paths[id & 3] | id;
     if (output[id] != expected) return 1;
   }
   CHECK(gpu_device_close(dev));

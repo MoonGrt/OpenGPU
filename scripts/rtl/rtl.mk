@@ -25,7 +25,7 @@ VBUILD := $(HW_BUILD_DIR)/verilated/$(HDL_BACKEND)
 VLIB := $(VBUILD)/libV$(VTOP).a
 
 VERILATOR_CFLAGS := -cc -MMD -O3 --x-assign fast --x-initial fast \
-                    --timescale "1ns/1ns" --autoflush -j 8
+                    --timescale "1ns/1ns" --autoflush --unroll-count 1024 -j 1
 ifeq ($(CONFIG_WAVE),y)
 VERILATOR_CFLAGS += --trace
 endif
@@ -36,8 +36,11 @@ VROOT ?= $(shell $(VERILATOR) -V 2>/dev/null | \
           sed -n 's/^[[:space:]]*VERILATOR_ROOT[[:space:]]*=[[:space:]]*//p' | head -1)
 INC_PATH += $(VROOT)/include $(VROOT)/include/vltstd $(VBUILD)
 
-$(VLIB): $(RTL_SOURCES) $(OPENGPU_HOME)/.config $(DPI_SOURCE)
+$(VLIB): $(RTL_SOURCES) $(OPENGPU_HOME)/.config $(DPI_SOURCE) \
+         $(OPENGPU_HOME)/scripts/rtl/rtl.mk \
+         $(OPENGPU_HOME)/scripts/rtl/$(HDL_BACKEND).mk
 	@echo "+ VERILATE $(HDL_BACKEND) $<"
+	@$(RM) -r $(VBUILD)
 	@mkdir -p $(VBUILD)
 	$(VERILATOR) $(VERILATOR_CFLAGS) $(VERILATOR_PARAMS) $(VSRCS) --top-module $(VTOP) --Mdir $(VBUILD)
 	$(MAKE) -C $(VBUILD) -f V$(VTOP).mk
@@ -46,6 +49,7 @@ $(VLIB): $(RTL_SOURCES) $(OPENGPU_HOME)/.config $(DPI_SOURCE)
 	# Some Verilator releases put support objects beside --Mdir while others
 	# place them in its parent.  wildcard suppresses a non-existent glob so ar
 	# never receives a literal `verilated*.o` filename.
+	$(RM) $@
 	ar rcs $@ $(VBUILD)/*.o $(wildcard $(VBUILD)/../verilated*.o)
 
 rtl: $(RTL_FINAL)

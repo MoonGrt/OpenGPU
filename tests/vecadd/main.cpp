@@ -17,8 +17,9 @@ int main(int argc, char **argv) {
     else return 2;
   }
   if (!path || !count) return 2;
-  gpu_device_h dev; gpu_kernel_h kernel;
+  gpu_device_h dev; gpu_kernel_h kernel; gpu_device_config_t cfg;
   CHECK(gpu_device_open(0, &dev));
+  CHECK(gpu_device_get_config(dev, &cfg));
   size_t bytes = count * sizeof(app_u32);
   gpu_addr_t aa, ba, ca;
   CHECK(gpu_mem_alloc(dev, bytes, &aa));
@@ -30,7 +31,10 @@ int main(int argc, char **argv) {
   CHECK(gpu_mem_write(dev, ba, b.data(), bytes));
   CHECK(gpu_kernel_load_file(dev, path, &kernel));
   kernel_arg_t args = {count, aa, ba, ca};
-  CHECK(gpu_launch(dev, kernel, &args, sizeof(args)));
+  unsigned block = cfg.warps_per_core * cfg.threads_per_warp;
+  gpu_launch_info_t launch = {
+    {(count + block - 1) / block, 1, 1}, {block, 1, 1}, &args, sizeof(args)};
+  CHECK(gpu_launch(dev, kernel, &launch));
   CHECK(gpu_wait(dev));
   CHECK(gpu_mem_read(dev, c.data(), ca, bytes));
   for (unsigned i = 0; i < count; ++i)

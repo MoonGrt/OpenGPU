@@ -22,6 +22,8 @@ void rtl_exit(void);
 void gpu_rtl_init(void);
 bool gpu_rtl_launch(uint32_t entry);
 bool gpu_rtl_wait(uint64_t max_cycles);
+void gpu_rtl_dcr_write(uint32_t addr, uint32_t data);
+bool gpu_rtl_fault(void);
 #endif
 
 typedef struct {
@@ -43,6 +45,8 @@ struct gpu_device {
   uint32_t kernel_generation;
   allocation_t allocations[GPU_MAX_ALLOCS];
   struct gpu_kernel *kernels;
+  gpu_addr_t launch_args;
+  bool launch_args_used;
 #if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
   uint8_t *reference;
 #endif
@@ -63,6 +67,21 @@ static bool range_inside(uint32_t address, size_t size,
                          uint32_t begin, uint32_t end) {
   return size != 0 && address >= begin && address < end &&
     size <= UINT32_MAX && (uint32_t)size <= end - address;
+}
+
+static bool mul_u32(uint32_t a, uint32_t b, uint32_t *out) {
+  uint64_t product = (uint64_t)a * b;
+  if (product > UINT32_MAX) return false;
+  *out = (uint32_t)product;
+  return true;
+}
+
+static void release_launch_args(gpu_device_h device) {
+  if (device->launch_args_used) {
+    (void)gpu_mem_free(device, device->launch_args);
+    device->launch_args = 0;
+    device->launch_args_used = false;
+  }
 }
 
 static bool valid_device(gpu_device_h device) {
@@ -173,6 +192,8 @@ gpu_result_t gpu_device_open(uint32_t index, gpu_device_h *device) {
   singleton.running = false;
   singleton.kernel_generation = 0;
   singleton.kernels = NULL;
+  singleton.launch_args = 0;
+  singleton.launch_args_used = false;
   *device = &singleton;
   return GPU_SUCCESS;
 }
@@ -282,12 +303,12 @@ gpu_result_t gpu_kernel_load_memory(
     gpu_device_h device, const void *image, size_t size,
     gpu_kernel_h *kernel) {
   if (!valid_device(device) || !image || !kernel || size == 0 ||
-      size > GPU_LAUNCH_ADDR - GPU_KERNEL_BASE)
+      size > GPU_KERNEL_END - GPU_KERNEL_BASE)
     return GPU_ERROR_INVALID_ARGUMENT;
   struct gpu_kernel *loaded = calloc(1, sizeof(*loaded));
   if (!loaded) return GPU_ERROR_OUT_OF_MEMORY;
   memset(guest_to_host(GPU_KERNEL_BASE), 0,
-      GPU_LAUNCH_ADDR - GPU_KERNEL_BASE);
+      GPU_KERNEL_END - GPU_KERNEL_BASE);
   raw_write(GPU_KERNEL_BASE, image, size);
   loaded->device = device;
   loaded->entry = GPU_KERNEL_BASE;
@@ -325,24 +346,47 @@ gpu_result_t gpu_kernel_load_file(
 
 gpu_result_t gpu_launch(
     gpu_device_h device, gpu_kernel_h kernel,
-    const void *arguments, size_t argument_size) {
+    const gpu_launch_info_t *info) {
   if (!valid_device(device) || !kernel || kernel->device != device ||
       kernel->generation != device->kernel_generation ||
-      device->running || (argument_size != 0 && !arguments) ||
-      argument_size > GPU_ARGS_END - GPU_ARGS_ADDR)
+      device->running || !info ||
+      (info->args_size != 0 && !info->args_host) ||
+      info->args_size > UINT32_MAX)
+    return GPU_ERROR_INVALID_ARGUMENT;
+  uint32_t block_xy, block_size, grid_xy, grid_size;
+  for (unsigned i = 0; i < 3; ++i)
+    if (info->grid_dim[i] == 0 || info->block_dim[i] == 0)
+      return GPU_ERROR_INVALID_ARGUMENT;
+  if (!mul_u32(info->block_dim[0], info->block_dim[1], &block_xy) ||
+      !mul_u32(block_xy, info->block_dim[2], &block_size) ||
+      block_size > CONFIG_GPU_NUM_WARPS * CONFIG_GPU_NUM_THREADS ||
+      !mul_u32(info->grid_dim[0], info->grid_dim[1], &grid_xy) ||
+      !mul_u32(grid_xy, info->grid_dim[2], &grid_size) ||
+      !mul_u32(grid_size, block_size, &grid_size))
     return GPU_ERROR_INVALID_ARGUMENT;
 
-  gpu_launch_info_t launch = {
-    .num_harts = GPU_NUM_HARTS,
-    .physical_cores = CONFIG_GPU_NUM_CORES,
-    .warps_per_core = CONFIG_GPU_NUM_WARPS,
-    .threads_per_warp = CONFIG_GPU_NUM_THREADS,
-    .args_addr = GPU_ARGS_ADDR,
-    .args_size = (uint32_t)argument_size,
-  };
-  raw_write(GPU_LAUNCH_ADDR, &launch, sizeof(launch));
-  memset(guest_to_host(GPU_ARGS_ADDR), 0, GPU_ARGS_END - GPU_ARGS_ADDR);
-  if (argument_size) raw_write(GPU_ARGS_ADDR, arguments, argument_size);
+  device->launch_args = 0;
+  device->launch_args_used = false;
+  if (info->args_size) {
+    gpu_result_t result = gpu_mem_alloc(
+        device, info->args_size, &device->launch_args);
+    if (result != GPU_SUCCESS) return result;
+    device->launch_args_used = true;
+    raw_write(device->launch_args, info->args_host, info->args_size);
+  }
+  gpu_iss_configure(device->launch_args, info->grid_dim, info->block_dim);
+#if defined(CONFIG_HM)
+  gpu_rtl_dcr_write(GPU_DCR_STARTUP_PC, kernel->entry);
+  gpu_rtl_dcr_write(GPU_DCR_ARGS_ADDR, device->launch_args);
+  gpu_rtl_dcr_write(GPU_DCR_ARGS_SIZE, (uint32_t)info->args_size);
+  gpu_rtl_dcr_write(GPU_DCR_BLOCK_DIM_X, info->block_dim[0]);
+  gpu_rtl_dcr_write(GPU_DCR_BLOCK_DIM_Y, info->block_dim[1]);
+  gpu_rtl_dcr_write(GPU_DCR_BLOCK_DIM_Z, info->block_dim[2]);
+  gpu_rtl_dcr_write(GPU_DCR_GRID_DIM_X, info->grid_dim[0]);
+  gpu_rtl_dcr_write(GPU_DCR_GRID_DIM_Y, info->grid_dim[1]);
+  gpu_rtl_dcr_write(GPU_DCR_GRID_DIM_Z, info->grid_dim[2]);
+  gpu_rtl_dcr_write(GPU_DCR_BLOCK_SIZE, block_size);
+#endif
   trace_events = 0;
 
 #if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
@@ -352,6 +396,7 @@ gpu_result_t gpu_launch(
     free(initial);
     free(device->reference);
     device->reference = NULL;
+    release_launch_args(device);
     return GPU_ERROR_OUT_OF_MEMORY;
   }
   memcpy(initial, guest_to_host(CONFIG_MBASE), CONFIG_MSIZE);
@@ -364,6 +409,7 @@ gpu_result_t gpu_launch(
     free(initial);
     free(device->reference);
     device->reference = NULL;
+    release_launch_args(device);
     return GPU_ERROR_TIMEOUT;
   }
   memcpy(device->reference, guest_to_host(CONFIG_MBASE), CONFIG_MSIZE);
@@ -372,13 +418,20 @@ gpu_result_t gpu_launch(
   if (!gpu_rtl_launch(kernel->entry)) {
     free(device->reference);
     device->reference = NULL;
+    release_launch_args(device);
     return GPU_ERROR_BACKEND;
   }
 #elif defined(CONFIG_HM)
-  if (!gpu_rtl_launch(kernel->entry)) return GPU_ERROR_BACKEND;
+  if (!gpu_rtl_launch(kernel->entry)) {
+    release_launch_args(device);
+    return GPU_ERROR_BACKEND;
+  }
 #else
   gpu_iss_init(GPU_NUM_HARTS);
-  if (!gpu_iss_launch(kernel->entry)) return GPU_ERROR_BACKEND;
+  if (!gpu_iss_launch(kernel->entry)) {
+    release_launch_args(device);
+    return GPU_ERROR_BACKEND;
+  }
 #endif
   device->running = true;
   return GPU_SUCCESS;
@@ -393,7 +446,21 @@ gpu_result_t gpu_wait(gpu_device_h device) {
   bool completed = run_iss_to_completion();
 #endif
   device->running = false;
-  if (!completed) return GPU_ERROR_TIMEOUT;
+  release_launch_args(device);
+  if (!completed) {
+#if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
+    free(device->reference);
+    device->reference = NULL;
+#endif
+#if defined(CONFIG_HM)
+    return gpu_rtl_fault() ? GPU_ERROR_BACKEND : GPU_ERROR_TIMEOUT;
+#else
+    return gpu_iss_fault() ? GPU_ERROR_BACKEND : GPU_ERROR_TIMEOUT;
+#endif
+  }
+#if !defined(CONFIG_HM)
+  if (gpu_iss_fault()) return GPU_ERROR_BACKEND;
+#endif
 
 #if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
   uint8_t *actual = guest_to_host(CONFIG_MBASE);

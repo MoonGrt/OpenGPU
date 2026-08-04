@@ -10,8 +10,9 @@ The project is intended for architecture experiments, RTL education, and backend
 
 - Three independently maintained RTL backends with a common `GPUTop` interface
 - Configurable numbers of cores, resident warps, and threads per warp
-- Per-lane program counters and 16 RV32E integer registers
-- Round-robin warp scheduling with PC-based lane masking for divergent control flow
+- KMU-controlled 3D CTA dispatch through a stable write-only DCR ABI
+- Shared PC, instruction, active mask, and deferred-path stack per warp
+- Independent thread coordinates, memory addresses, results, and 16 RV32E registers per SIMD lane
 - Native C/C++ runtime for allocation, transfers, kernel loading, launch, and synchronization
 - C ISS reference execution and optional full-PMEM DiffTest against RTL
 - VCD waveform generation and instruction/store tracing
@@ -50,7 +51,9 @@ make run TEST=topology
 
 The host application uses the public runtime API to allocate device memory, upload data, load a kernel image, and launch it. For a hardware backend, the runtime snapshots PMEM, executes the kernel with the C ISS, restores the snapshot, and then runs the selected RTL through Verilator. When DiffTest is enabled, the complete final PMEM images are compared.
 
-Inside each GPU core, a round-robin scheduler selects an active warp. Lanes in that warp whose program counter matches the selected instruction form the issue mask; lanes on another control-flow path remain inactive until their PC is selected. Loads and stores are issued lane by lane through the shared DPI memory interface. A lane halts on `ebreak`, and a core reports completion after all resident lanes halt.
+For each launch, the Runtime copies `args_host` into an internal device scratch allocation, programs the KMU DCRs, and emits a launch pulse. The KMU walks CTAs in X→Y→Z order and dispatches them round-robin to ready cores. Each core hosts one CTA and schedules its active warps.
+
+A warp owns one PC, one fetched instruction, one active-lane mask, and an eight-entry deferred-path stack. A thread is a SIMD lane: it owns register values, 3D coordinates, arithmetic results, and memory addresses, but it has no independent PC or instruction fetch. Divergent branches execute the fall-through mask first and defer the taken mask. Loads and stores are serialized over active lanes through the shared DPI memory interface.
 
 ```mermaid
 flowchart TB
@@ -64,7 +67,7 @@ flowchart TB
 
     repo --> sw[sw/ — software stack]
     sw --> api[include/ — public host runtime API]
-    sw --> runtime[runtime/ — runtime, PMEM, C ISS, RTL harness]
+    sw --> runtime[runtime/ — DCR launch, PMEM, C ISS, RTL harness]
     sw --> kernel[kernel/ — RV32E ABI, startup code, linker script]
     sw --> launcher[launcher.cpp — native frontend entry wrapper]
 
@@ -133,24 +136,33 @@ Generated files live under `hw/build/`, `sw/build/`, and test-local `build/` dir
 
 ## Runtime and kernel ABI
 
-The public host interface is declared in [`sw/include/runtime.h`](sw/include/runtime.h). Its `gpu_` API covers device lifecycle, configuration queries, memory allocation and transfer, kernel loading, launch, wait, and error reporting.
+The public host interface is declared in [`sw/include/runtime.h`](sw/include/runtime.h). A launch supplies three-dimensional grid and block geometry plus host argument bytes:
 
-Kernel support is located in [`sw/kernel`](sw/kernel). Kernels are built for the `riscv32-gpu` target and use the launch metadata placed in PMEM by the runtime. Logical hart IDs map directly onto the configured topology:
+```c
+gpu_launch_info_t info = {
+  .grid_dim = {grid_x, grid_y, grid_z},
+  .block_dim = {block_x, block_y, block_z},
+  .args_host = &args,
+  .args_size = sizeof(args),
+};
+gpu_launch(device, kernel, &info);
+```
+
+Kernel support is located in [`sw/kernel`](sw/kernel). Kernels are built for the `riscv32-gpu` target and use `extern "C" void kernel_main(const kernel_arg_t *args)`. The startup code reads the DCR-provided argument-address CSR into `a0`; geometry and IDs are available through read-only CSR intrinsics such as `gpu_thread_idx_x()`, `gpu_block_idx_x()`, `gpu_global_id()`, `gpu_warp_id()`, and `gpu_lane_id()`.
 
 ```text
-mhartid = core_id * NUM_WARPS * NUM_THREADS
-         + warp_id * NUM_THREADS
-         + thread_id
+mhartid = linear_block_id * block_size + linear_thread_id
 ```
 
 All RTL backends expose the same top-level contract:
 
-- `io_gpu_launch`, `io_gpu_busy`, and per-core `io_gpu_done`
+- `io_dcr_valid`, 12-bit `io_dcr_addr`, and 32-bit `io_dcr_data`
+- independent `io_gpu_launch`, `io_gpu_busy`, `io_gpu_fault`, and per-core `io_gpu_done`
 - Per-warp activity state
 - The currently issued warp and lane mask for each core
 - DPI-backed instruction and data memory access
 
-The kernel image begins at `0x81000000`; launch metadata and arguments occupy reserved addresses immediately above the image region. These internal values are defined in `sw/runtime/gpu/include/gpu.h` and enforced by the GPU linker script.
+The DCR map covers startup PC (`0x010`), argument address/size (`0x011`–`0x012`), block dimensions (`0x013`–`0x015`), grid dimensions (`0x016`–`0x018`), and linear block size (`0x019`). The kernel image begins at `0x81000000`; per-launch arguments use an internal heap scratch allocation that is released by `gpu_wait`.
 
 ## Tests and debugging
 
@@ -174,7 +186,8 @@ The build expects GNU Make, GCC/G++, Java, Flex, Bison, Verilator, GTKWave, and 
 
 - Native host execution is implemented; the RISC-V and MIPS host frontends are placeholders.
 - RTL simulation is the supported hardware path; FPGA synthesis and physical implementation flows are not included.
-- The core implements the RV32E integer subset required by the included kernels, with `mhartid` support and `ebreak` termination. Unsupported instructions halt the affected lane.
+- The core implements the RV32E integer subset required by the included kernels, dynamic topology CSRs, and `ebreak` path termination. Illegal instructions/CSRs, lane-divergent `jalr`, and divergence-stack overflow report `GPU_ERROR_BACKEND`.
+- The first divergence model does not perform early reconvergence at a join PC. A common suffix may execute once per deferred mask; warp-global side effects and barriers after divergence are not supported.
 - The memory system is a flat simulated PMEM reached through DPI; caches, virtual memory, and a production interconnect are outside the current design.
 
 ## License

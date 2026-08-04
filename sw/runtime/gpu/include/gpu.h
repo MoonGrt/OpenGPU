@@ -5,21 +5,21 @@
 
 /* Internal memory map and launch ABI shared with riscv32-gpu AM. */
 #define GPU_KERNEL_BASE   0x81000000u
-#define GPU_LAUNCH_ADDR   0x8100f000u
-#define GPU_ARGS_ADDR     0x8100f100u
-#define GPU_ARGS_END      0x81010000u
+#define GPU_KERNEL_END    0x81010000u
 #define GPU_STACK_TOP     0x81800000u
 #define GPU_HEAP_BASE     0x82000000u
 #define GPU_MAX_ALLOCS    64u
 
-typedef struct {
-  uint32_t num_harts;
-  uint32_t physical_cores;
-  uint32_t warps_per_core;
-  uint32_t threads_per_warp;
-  uint32_t args_addr;
-  uint32_t args_size;
-} gpu_launch_info_t;
+#define GPU_DCR_STARTUP_PC  0x010u
+#define GPU_DCR_ARGS_ADDR   0x011u
+#define GPU_DCR_ARGS_SIZE   0x012u
+#define GPU_DCR_BLOCK_DIM_X 0x013u
+#define GPU_DCR_BLOCK_DIM_Y 0x014u
+#define GPU_DCR_BLOCK_DIM_Z 0x015u
+#define GPU_DCR_GRID_DIM_X  0x016u
+#define GPU_DCR_GRID_DIM_Y  0x017u
+#define GPU_DCR_GRID_DIM_Z  0x018u
+#define GPU_DCR_BLOCK_SIZE  0x019u
 
 #ifdef __cplusplus
 extern "C" {

@@ -2,25 +2,33 @@
 #include <gpu.h>
 #include <device/memory.h>
 
-#define GPU_NUM_HARTS \
-  (CONFIG_GPU_NUM_CORES * CONFIG_GPU_NUM_WARPS * CONFIG_GPU_NUM_THREADS)
-
-static gpu_iss_core_t cores[GPU_NUM_HARTS];
+static gpu_iss_core_t *cores;
 static uint32_t ncores;
+static uint32_t physical_count;
 static uint32_t rr;
+static uint32_t launch_args_addr;
+static uint32_t launch_grid[3] = {1, 1, 1};
+static uint32_t launch_block[3] = {1, 1, 1};
+static bool faulted;
+
+static void fault_core(gpu_iss_core_t *core) {
+  faulted = true;
+  core->halted = true;
+}
 
 static inline int32_t sext(uint32_t value, unsigned bits) {
   return (int32_t)(value << (32 - bits)) >> (32 - bits);
 }
 
-static inline uint32_t load_mem(uint32_t addr, unsigned funct3) {
+static inline uint32_t load_mem(
+    gpu_iss_core_t *core, uint32_t addr, unsigned funct3) {
   switch (funct3) {
     case 0: return (uint32_t)sext(paddr_read(addr, 1), 8);
     case 1: return (uint32_t)sext(paddr_read(addr, 2), 16);
     case 2: return paddr_read(addr, 4);
     case 4: return paddr_read(addr, 1);
     case 5: return paddr_read(addr, 2);
-    default: panic("GPU ISS: unsupported load funct3=%u", funct3);
+    default: fault_core(core); return 0;
   }
 }
 
@@ -31,9 +39,17 @@ static inline void store_mem(gpu_iss_core_t *c, uint32_t addr,
     case 0: mask = 1; paddr_write(addr, 1, value); break;
     case 1: mask = 3; paddr_write(addr, 2, value); break;
     case 2: mask = 15; paddr_write(addr, 4, value); break;
-    default: panic("GPU ISS: unsupported store funct3=%u", funct3);
+    default: fault_core(c); return;
   }
   gpu_trace_store(c->hartid, addr, mask, value);
+}
+
+static bool same_warp(
+    const gpu_iss_core_t *left, const gpu_iss_core_t *right) {
+  return left->warp_id == right->warp_id &&
+      left->block_idx[0] == right->block_idx[0] &&
+      left->block_idx[1] == right->block_idx[1] &&
+      left->block_idx[2] == right->block_idx[2];
 }
 
 static void step_core(gpu_iss_core_t *c) {
@@ -56,7 +72,7 @@ static void step_core(gpu_iss_core_t *c) {
   /* Unused register bit slices overlap immediate fields and must not be checked. */
   if ((uses_rd && rd >= 16) || (uses_rs1 && rs1 >= 16) ||
       (uses_rs2 && rs2 >= 16))
-    panic("GPU ISS: RV32E register out of range at 0x%08x", c->pc);
+    { fault_core(c); return; }
   a = uses_rs1 ? c->gpr[rs1] : 0;
   b = uses_rs2 ? c->gpr[rs2] : 0;
   gpu_trace_commit(c->hartid, c->pc, inst);
@@ -75,7 +91,7 @@ static void step_core(gpu_iss_core_t *c) {
         case 7: result = a & (uint32_t)imm; break;
         case 1: result = a << ((inst >> 20) & 31); break;
         case 5: result = (funct7 == 0x20) ? (uint32_t)((int32_t)a >> ((inst >> 20) & 31)) : a >> ((inst >> 20) & 31); break;
-        default: panic("GPU ISS: unsupported OP-IMM");
+        default: fault_core(c); return;
       }
       break;
     }
@@ -89,10 +105,10 @@ static void step_core(gpu_iss_core_t *c) {
         case 5: result = (funct7 == 0x20) ? (uint32_t)((int32_t)a >> (b & 31)) : a >> (b & 31); break;
         case 6: result = a | b; break;
         case 7: result = a & b; break;
-        default: panic("GPU ISS: unsupported OP");
+        default: fault_core(c); return;
       }
       break;
-    case 0x03: result = load_mem(a + sext(inst >> 20, 12), funct3); break;
+    case 0x03: result = load_mem(c, a + sext(inst >> 20, 12), funct3); break;
     case 0x23: {
       uint32_t imm = ((inst >> 7) & 0x1f) | ((inst >> 25) << 5);
       store_mem(c, a + sext(imm, 12), b, funct3);
@@ -109,7 +125,7 @@ static void step_core(gpu_iss_core_t *c) {
         case 5: take = (int32_t)a >= (int32_t)b; break;
         case 6: take = a < b; break;
         case 7: take = a >= b; break;
-        default: panic("GPU ISS: unsupported branch");
+        default: fault_core(c); return;
       }
       if (take) next = c->pc + sext(imm, 13);
       break;
@@ -121,19 +137,48 @@ static void step_core(gpu_iss_core_t *c) {
       next = c->pc + sext(imm, 21);
       break;
     }
-    case 0x67:
+    case 0x67: {
       result = c->pc + 4;
       next = (a + sext(inst >> 20, 12)) & ~1u;
-      break;
-    case 0x73:
-      if (inst == 0x00100073) { c->halted = true; return; }               // EBREAK
-      if (funct3 == 2 && rs1 == 0 && ((inst >> 20) & 0xfff) == 0xf14) {    // CSRRS mhartid,x0
-        result = c->hartid;
-      } else {
-        panic("GPU ISS: unsupported SYSTEM instruction 0x%08x", inst);
+      for (uint32_t i = 0; i < ncores; ++i) {
+        gpu_iss_core_t *lane = &cores[i];
+        if (lane != c && !lane->halted && lane->pc == c->pc &&
+            same_warp(c, lane)) {
+          uint32_t lane_target =
+              (lane->gpr[rs1] + sext(inst >> 20, 12)) & ~1u;
+          if (lane_target != next) { fault_core(c); return; }
+        }
       }
       break;
-    default: panic("GPU ISS: unsupported opcode 0x%02x at 0x%08x", opcode, c->pc);
+    }
+    case 0x73:
+      if (inst == 0x00100073) { c->halted = true; return; }               // EBREAK
+      if (funct3 == 2 && rs1 == 0) {
+        switch ((inst >> 20) & 0xfff) {
+          case 0xf14: result = c->hartid; break;
+          case 0xcc0: result = c->thread_idx[0]; break;
+          case 0xcc1: result = c->thread_idx[1]; break;
+          case 0xcc2: result = c->thread_idx[2]; break;
+          case 0xcc3: result = c->block_idx[0]; break;
+          case 0xcc4: result = c->block_idx[1]; break;
+          case 0xcc5: result = c->block_idx[2]; break;
+          case 0xcc6: result = c->block_dim[0]; break;
+          case 0xcc7: result = c->block_dim[1]; break;
+          case 0xcc8: result = c->block_dim[2]; break;
+          case 0xcc9: result = c->grid_dim[0]; break;
+          case 0xcca: result = c->grid_dim[1]; break;
+          case 0xccb: result = c->grid_dim[2]; break;
+          case 0xccc: result = c->args_addr; break;
+          case 0xccd: result = c->physical_id; break;
+          case 0xcce: result = c->warp_id; break;
+          case 0xccf: result = c->lane_id; break;
+          default: fault_core(c); return;
+        }
+      } else {
+        fault_core(c); return;
+      }
+      break;
+    default: fault_core(c); return;
   }
   if (uses_rd && rd != 0) c->gpr[rd] = result;
   c->gpr[0] = 0;
@@ -141,18 +186,54 @@ static void step_core(gpu_iss_core_t *c) {
 }
 
 void gpu_iss_init(uint32_t num_cores) {
-  Assert(num_cores >= 1 && num_cores <= GPU_NUM_HARTS,
-      "invalid GPU hardware-thread count");
-  ncores = num_cores;
+  Assert(num_cores >= 1, "invalid GPU hardware-thread count");
+  free(cores);
+  cores = NULL;
+  ncores = 0;
+  physical_count = num_cores;
   rr = 0;
-  memset(cores, 0, sizeof(cores));
+  faulted = false;
+}
+
+void gpu_iss_configure(uint32_t args_addr,
+    const uint32_t grid_dim[3], const uint32_t block_dim[3]) {
+  launch_args_addr = args_addr;
+  memcpy(launch_grid, grid_dim, sizeof(launch_grid));
+  memcpy(launch_block, block_dim, sizeof(launch_block));
 }
 
 bool gpu_iss_launch(uint32_t entry) {
+  uint64_t blocks = (uint64_t)launch_grid[0] * launch_grid[1] * launch_grid[2];
+  uint64_t block_size =
+      (uint64_t)launch_block[0] * launch_block[1] * launch_block[2];
+  uint64_t total = blocks * block_size;
+  if (total == 0 || total > UINT32_MAX) return false;
+  free(cores);
+  cores = calloc((size_t)total, sizeof(*cores));
+  if (!cores) return false;
+  ncores = (uint32_t)total;
+  rr = 0;
+  const uint32_t lanes_per_core =
+      CONFIG_GPU_NUM_WARPS * CONFIG_GPU_NUM_THREADS;
+  const uint32_t hardware_cores = physical_count / lanes_per_core;
   for (uint32_t i = 0; i < ncores; ++i) {
-    memset(&cores[i], 0, sizeof(cores[i]));
+    uint32_t local = i % (uint32_t)block_size;
+    uint32_t block = i / (uint32_t)block_size;
     cores[i].pc = entry;
     cores[i].hartid = i;
+    cores[i].physical_id =
+        (block % hardware_cores) * lanes_per_core + local;
+    cores[i].args_addr = launch_args_addr;
+    cores[i].lane_id = local % CONFIG_GPU_NUM_THREADS;
+    cores[i].warp_id = local / CONFIG_GPU_NUM_THREADS;
+    cores[i].thread_idx[0] = local % launch_block[0];
+    cores[i].thread_idx[1] = (local / launch_block[0]) % launch_block[1];
+    cores[i].thread_idx[2] = local / (launch_block[0] * launch_block[1]);
+    cores[i].block_idx[0] = block % launch_grid[0];
+    cores[i].block_idx[1] = (block / launch_grid[0]) % launch_grid[1];
+    cores[i].block_idx[2] = block / (launch_grid[0] * launch_grid[1]);
+    memcpy(cores[i].block_dim, launch_block, sizeof(launch_block));
+    memcpy(cores[i].grid_dim, launch_grid, sizeof(launch_grid));
   }
   return true;
 }
@@ -168,9 +249,12 @@ bool gpu_iss_step(void) {
 }
 
 bool gpu_iss_done(void) {
+  if (faulted) return true;
   for (uint32_t i = 0; i < ncores; ++i)
     if (!cores[i].halted) return false;
   return ncores != 0;
 }
 
 uint32_t gpu_iss_num_cores(void) { return ncores; }
+
+bool gpu_iss_fault(void) { return faulted; }

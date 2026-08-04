@@ -3,7 +3,7 @@ SCALA_SRCS := $(shell find $(OPENGPU_HOME)/hw/chisel/src -name '*.scala')
 RTL_SV := $(RTL_DIR)/GPUTop.sv
 RTL_FINAL := $(RTL_DIR)/GPUTop.v
 
-$(RTL_FINAL): $(SCALA_SRCS)
+$(RTL_FINAL): $(SCALA_SRCS) $(OPENGPU_HOME)/.config
 	@echo "+ CHISEL $@"
 	@mkdir -p $(RTL_DIR)
 	@if test "$(TOOL)" = sbt; then \
