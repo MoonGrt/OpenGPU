@@ -74,6 +74,72 @@ module GPUCore #(
     assign active_warps[aw]=warp_valid[aw];
   endgenerate
 
+`ifdef CONFIG_DIFFTEST
+  localparam integer DIFF_WORDS = 28 + 20*WARPS + 20*WARPS*THREADS;
+  reg [DIFF_WORDS*32-1:0] diff_state;
+  integer dw, dc, dr;
+  always @(*) begin
+    /* verilator lint_off WIDTHCONCAT */
+    diff_state = '0;
+    /* verilator lint_on WIDTHCONCAT */
+    diff_state[0*32 +: 32] = 32'(state);
+    diff_state[1*32 +: 32] = 32'(cta_active);
+    diff_state[2*32 +: 32] = 32'(fault_r);
+    diff_state[3*32 +: 32] = 32'(rr_warp);
+    diff_state[4*32 +: 32] = 32'(issue_warp);
+    diff_state[5*32 +: 32] = 32'(issue_mask);
+    diff_state[6*32 +: 32] = issue_pc;
+    diff_state[7*32 +: 32] = issue_inst;
+    diff_state[8*32 +: 32] = 32'(mem_thread);
+    diff_state[9*32 +: 32] = block_x;
+    diff_state[10*32 +: 32] = block_y;
+    diff_state[11*32 +: 32] = block_z;
+    diff_state[12*32 +: 32] = dim_x;
+    diff_state[13*32 +: 32] = dim_y;
+    diff_state[14*32 +: 32] = dim_z;
+    diff_state[15*32 +: 32] = grid_x;
+    diff_state[16*32 +: 32] = grid_y;
+    diff_state[17*32 +: 32] = grid_z;
+    diff_state[18*32 +: 32] = args_addr;
+    diff_state[19*32 +: 32] = 32'(active_warps);
+    diff_state[20*32 +: 32] = 32'(state == FETCH);
+    diff_state[21*32 +: 32] = issue_pc;
+    diff_state[22*32 +: 32] = 32'(dmem_ren && state == MEM_REQ);
+    diff_state[23*32 +: 32] = 32'(dmem_wen && state == MEM_REQ);
+    if ((state == MEM_REQ || state == MEM_RESP) && issue_mask[mem_thread]) begin
+      diff_state[24*32 +: 32] = 32'(dmem_mask);
+      diff_state[25*32 +: 32] = dmem_addr;
+      diff_state[26*32 +: 32] = dmem_wdata;
+      if (state == MEM_RESP && opcode == 7'b0000011)
+        diff_state[27*32 +: 32] = dmem_rdata;
+    end
+    for (dw = 0; dw < WARPS; dw = dw + 1) begin
+      diff_state[(28 + dw*20 + 0)*32 +: 32] = 32'(warp_valid[dw]);
+      diff_state[(28 + dw*20 + 1)*32 +: 32] = warp_pc[dw];
+      diff_state[(28 + dw*20 + 2)*32 +: 32] = 32'(warp_mask[dw]);
+      diff_state[(28 + dw*20 + 3)*32 +: 32] = 32'(stack_sp[dw]);
+      for (dr = 0; dr < STACK_DEPTH; dr = dr + 1) begin
+        diff_state[(28 + dw*20 + 4 + dr*2)*32 +: 32] =
+            stack_pc[dw*STACK_DEPTH + dr];
+        diff_state[(28 + dw*20 + 5 + dr*2)*32 +: 32] =
+            32'(stack_mask[dw*STACK_DEPTH + dr]);
+      end
+    end
+    for (dc = 0; dc < CTX; dc = dc + 1) begin
+      diff_state[(28 + 20*WARPS + dc*20 + 0)*32 +: 32] = thread_x[dc];
+      diff_state[(28 + 20*WARPS + dc*20 + 1)*32 +: 32] = thread_y[dc];
+      diff_state[(28 + 20*WARPS + dc*20 + 2)*32 +: 32] = thread_z[dc];
+      diff_state[(28 + 20*WARPS + dc*20 + 3)*32 +: 32] = global_id[dc];
+      for (dr = 0; dr < 16; dr = dr + 1)
+        diff_state[(28 + 20*WARPS + dc*20 + 4 + dr)*32 +: 32] =
+            gprs[dc*16 + dr];
+    end
+  end
+  DpiGpuStateBB #(
+    .WORDS(DIFF_WORDS), .BASE(23 + CORE_ID*DIFF_WORDS)
+  ) diff_bridge(.state(diff_state));
+`endif
+
   always @(*) begin
     dmem_ren=0; dmem_wen=0; dmem_addr=0; dmem_wdata=0; dmem_mask=0;
     if (state==MEM_REQ || state==MEM_RESP) begin
@@ -107,6 +173,7 @@ module GPUCore #(
       for(i=0;i<WARPS;i=i+1) begin
         warp_pc[i]<=0;warp_mask[i]<=0;warp_valid[i]<=0;stack_sp[i]<=0;
       end
+      for(i=0;i<WARPS*STACK_DEPTH;i=i+1) begin stack_pc[i]<=0;stack_mask[i]<=0;end
       for(i=0;i<CTX*16;i=i+1) gprs[i]<=0;
       for(i=0;i<CTX;i=i+1) begin thread_x[i]<=0;thread_y[i]<=0;thread_z[i]<=0;global_id[i]<=0;end
     end else if (cta_valid && cta_ready) begin
@@ -152,7 +219,10 @@ module GPUCore #(
           imm_b={{19{issue_inst[31]}},issue_inst[31],issue_inst[7],issue_inst[30:25],issue_inst[11:8],1'b0};
           imm_u={issue_inst[31:12],12'b0};
           imm_j={{11{issue_inst[31]}},issue_inst[31],issue_inst[19:12],issue_inst[20],issue_inst[30:21],1'b0};
-          uses_rd=opcode==7'b0110111||opcode==7'b0010111||opcode==7'b0010011||opcode==7'b0110011||opcode==7'b0000011||opcode==7'b1101111||opcode==7'b1100111||opcode==7'b1110011;
+          uses_rd = opcode == 7'b0110111 || opcode == 7'b0010111 ||
+              opcode == 7'b0010011 || opcode == 7'b0110011 ||
+              opcode == 7'b0000011 || opcode == 7'b1101111 ||
+              opcode == 7'b1100111 || opcode == 7'b1110011;
           uses_rs1=opcode==7'b0010011||opcode==7'b0110011||opcode==7'b0000011||opcode==7'b0100011||opcode==7'b1100011||opcode==7'b1100111;
           uses_rs2=opcode==7'b0110011||opcode==7'b0100011||opcode==7'b1100011;
           if((uses_rd&&rd[4])||(uses_rs1&&rs1[4])||(uses_rs2&&rs2[4]))begin
@@ -192,10 +262,46 @@ module GPUCore #(
               case(opcode)
                 7'b0110111:result=imm_u;
                 7'b0010111:result=issue_pc+imm_u;
-                7'b0010011:case(funct3)0:result=a+imm_i;2:result={31'b0,$signed(a)<$signed(imm_i)};3:result={31'b0,a<imm_i};4:result=a^imm_i;6:result=a|imm_i;7:result=a&imm_i;1:result=a<<issue_inst[24:20];5:result=issue_inst[30]?$signed(a)>>>issue_inst[24:20]:a>>issue_inst[24:20];default:supported=0;endcase
-                7'b0110011:case(funct3)0:result=(funct7==7'b0100000) ? a-b : a+b;1:result=a<<b[4:0];2:result={31'b0,$signed(a)<$signed(b)};3:result={31'b0,a<b};4:result=a^b;5:result=(funct7==7'b0100000) ? $signed(a)>>>b[4:0] : a>>b[4:0];6:result=a|b;7:result=a&b;default:supported=0;endcase
+                7'b0010011: begin
+                  case (funct3)
+                    0: result = a + imm_i;
+                    1: result = a << issue_inst[24:20];
+                    2: result = {31'b0, $signed(a) < $signed(imm_i)};
+                    3: result = {31'b0, a < imm_i};
+                    4: result = a ^ imm_i;
+                    5: result = issue_inst[30] ?
+                        $signed(a) >>> issue_inst[24:20] : a >> issue_inst[24:20];
+                    6: result = a | imm_i;
+                    7: result = a & imm_i;
+                    default: supported = 0;
+                  endcase
+                end
+                7'b0110011: begin
+                  case (funct3)
+                    0: result = funct7 == 7'b0100000 ? a - b : a + b;
+                    1: result = a << b[4:0];
+                    2: result = {31'b0, $signed(a) < $signed(b)};
+                    3: result = {31'b0, a < b};
+                    4: result = a ^ b;
+                    5: result = funct7 == 7'b0100000 ?
+                        $signed(a) >>> b[4:0] : a >> b[4:0];
+                    6: result = a | b;
+                    7: result = a & b;
+                    default: supported = 0;
+                  endcase
+                end
                 7'b1101111:begin result=issue_pc+4;next_pc=issue_pc+imm_j;end
-                7'b1100111:begin result=issue_pc+4;lane_target=(a+imm_i)&32'hfffffffe;next_pc=lane_target;if(!target_set)begin first_target=lane_target;target_set=1;end else if(first_target!=lane_target)divergent_target=1;end
+                7'b1100111: begin
+                  result = issue_pc + 4;
+                  lane_target = (a + imm_i) & 32'hfffffffe;
+                  next_pc = lane_target;
+                  if (!target_set) begin
+                    first_target = lane_target;
+                    target_set = 1;
+                  end else if (first_target != lane_target) begin
+                    divergent_target = 1;
+                  end
+                end
                 7'b1110011:begin
                   write_rd=1;
                   if(funct3!=3'b010||rs1!=0)supported=0;
@@ -227,7 +333,14 @@ module GPUCore #(
         MEM_RESP: begin
           c=int'(issue_warp)*THREADS+int'(mem_thread);base=c*16;
           addr=gprs[base+int'(rs1[3:0])] + ((opcode==7'b0000011) ? imm_i : imm_s);shifted=dmem_rdata>>(addr[1:0]*8);
-          case(funct3)0:load_data={{24{shifted[7]}},shifted[7:0]};1:load_data={{16{shifted[15]}},shifted[15:0]};2:load_data=dmem_rdata;4:load_data={24'b0,shifted[7:0]};5:load_data={16'b0,shifted[15:0]};default:load_data=0;endcase
+          case (funct3)
+            0: load_data = {{24{shifted[7]}}, shifted[7:0]};
+            1: load_data = {{16{shifted[15]}}, shifted[15:0]};
+            2: load_data = dmem_rdata;
+            4: load_data = {24'b0, shifted[7:0]};
+            5: load_data = {16'b0, shifted[15:0]};
+            default: load_data = 0;
+          endcase
           if(opcode==7'b0000011&&rd!=0)gprs[base+int'(rd[3:0])]<=load_data;
           gprs[base]<=0;
           if(mem_thread==TB'(THREADS-1))begin warp_pc[issue_warp]<=issue_pc+4;advance_warp();end

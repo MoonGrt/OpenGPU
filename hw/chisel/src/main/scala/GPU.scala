@@ -3,8 +3,9 @@ import chisel3.util.{log2Ceil, isPow2}
 import gpu.Kmu
 import gpu.riscv.GPUCore
 import gpu.perip.mem.{SimDataMem, SimInstMem}
+import gpu.util.DpiGpuStateBB
 
-class TOP(numCores: Int, numWarps: Int, numThreads: Int) extends Module {
+class TOP(numCores: Int, numWarps: Int, numThreads: Int, difftest: Boolean) extends Module {
   override def desiredName: String = "GPUTop"
   require(numCores >= 1 && numCores <= 16)
   require(numWarps >= 1 && isPow2(numWarps))
@@ -24,14 +25,14 @@ class TOP(numCores: Int, numWarps: Int, numThreads: Int) extends Module {
     val gpu_issue_mask = Output(Vec(numCores, UInt(numThreads.W)))
   })
 
-  val kmu = Module(new Kmu(numCores))
+  val kmu = Module(new Kmu(numCores, difftest))
   kmu.io.dcr.valid := io.dcr_valid
   kmu.io.dcr.addr := io.dcr_addr
   kmu.io.dcr.data := io.dcr_data
   kmu.io.launch := io.gpu_launch
 
   val cores = (0 until numCores).map { coreId =>
-    val core = Module(new GPUCore(coreId, numWarps, numThreads))
+    val core = Module(new GPUCore(coreId, numWarps, numThreads, difftest))
     val imem = Module(new SimInstMem)
     val dmem = Module(new SimDataMem)
     core.io.cta.valid := kmu.io.ctaValid(coreId)
@@ -48,6 +49,14 @@ class TOP(numCores: Int, numWarps: Int, numThreads: Int) extends Module {
   io.gpu_busy := kmu.io.busy
   io.gpu_fault := VecInit(cores.map(_.io.fault)).asUInt.orR
   io.gpu_done := VecInit(cores.map(_.io.done)).asUInt
+  if (difftest) {
+    val diff = Wire(Vec(3, UInt(32.W)))
+    diff(0) := io.gpu_busy
+    diff(1) := io.gpu_fault
+    diff(2) := io.gpu_done
+    val diffBridge = Module(new DpiGpuStateBB(3, 0))
+    diffBridge.io.state := diff.asUInt
+  }
 }
 
 object TOP extends App {
@@ -57,6 +66,7 @@ object TOP extends App {
   val cores = sys.env.get("GPU_NUM_CORES").map(_.toInt).getOrElse(2)
   val warps = sys.env.get("GPU_NUM_WARPS").map(_.toInt).getOrElse(4)
   val threads = sys.env.get("GPU_NUM_THREADS").map(_.toInt).getOrElse(4)
+  val difftest = sys.env.get("GPU_DIFFTEST").contains("y")
   circt.stage.ChiselStage.emitSystemVerilogFile(
-    new TOP(cores, warps, threads), args, options)
+    new TOP(cores, warps, threads, difftest), args, options)
 }

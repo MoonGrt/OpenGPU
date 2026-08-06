@@ -4,8 +4,10 @@ import spinal.core._
 import spinal.lib._
 import gpu.riscv.GPUCore
 import gpu.peripheral.{SimDataMem, SimInstMem}
+import gpu.util.DpiGpuStateBB
 
-class GPUTop(numCores: Int, numWarps: Int, numThreads: Int) extends Component {
+class GPUTop(numCores: Int, numWarps: Int, numThreads: Int, difftest: Boolean)
+    extends Component {
   ClockDomain.current.clock.setName("clock")
   val io = new Bundle {
     val dcr_valid = in Bool()
@@ -19,12 +21,13 @@ class GPUTop(numCores: Int, numWarps: Int, numThreads: Int) extends Component {
     val gpu_issue_warp = out Bits(numCores * scala.math.max(1, log2Up(numWarps)) bits)
     val gpu_issue_mask = out Bits(numCores * numThreads bits)
   }
-  val kmu = new Kmu(numCores)
+  val kmu = new Kmu(numCores, difftest)
   kmu.io.dcr.valid := io.dcr_valid
   kmu.io.dcr.addr := io.dcr_addr
   kmu.io.dcr.data := io.dcr_data
   kmu.io.launch := io.gpu_launch
-  val cores = (0 until numCores).map(i => new GPUCore(i, numWarps, numThreads))
+  val cores = (0 until numCores).map(i =>
+    new GPUCore(i, numWarps, numThreads, difftest))
   for (i <- 0 until numCores) {
     val imem = new SimInstMem
     val dmem = new SimDataMem
@@ -48,14 +51,24 @@ class GPUTop(numCores: Int, numWarps: Int, numThreads: Int) extends Component {
   io.gpu_active_warps := Vec(cores.map(_.io.activeWarps)).asBits
   io.gpu_issue_warp := Vec(cores.map(_.io.issueWarp.asBits)).asBits
   io.gpu_issue_mask := Vec(cores.map(_.io.issueMask)).asBits
+  if (difftest) {
+    val diff = Vec(UInt(32 bits), 3)
+    diff(0) := io.gpu_busy.asUInt.resize(32)
+    diff(1) := io.gpu_fault.asUInt.resize(32)
+    diff(2) := io.gpu_done.asUInt.resize(32)
+    val diffBridge = new DpiGpuStateBB(3, 0)
+    diffBridge.io.state := diff.asBits
+  }
 }
 
 object GPUTop extends App {
   SpinalConfig(
     targetDirectory = sys.env.getOrElse("SPINAL_TARGET_DIR", "."),
-    defaultConfigForClockDomains = ClockDomainConfig(resetKind = SYNC)
+    defaultConfigForClockDomains = ClockDomainConfig(resetKind = SYNC),
+    bitVectorWidthMax = 1 << 20
   ).generateVerilog(new GPUTop(
     sys.env.getOrElse("GPU_NUM_CORES", "2").toInt,
     sys.env.getOrElse("GPU_NUM_WARPS", "4").toInt,
-    sys.env.getOrElse("GPU_NUM_THREADS", "4").toInt))
+    sys.env.getOrElse("GPU_NUM_THREADS", "4").toInt,
+    sys.env.get("GPU_DIFFTEST").contains("y")))
 }

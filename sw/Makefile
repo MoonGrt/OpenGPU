@@ -33,9 +33,13 @@ RUNTIME_C_SRCS := runtime/gpu/gpu.c sim/sm/gpu_iss.c runtime/device/memory.c
 RUNTIME_CXX_SRCS := launcher.cpp
 ifeq ($(CONFIG_HM),y)
 RUNTIME_CXX_SRCS += sim/hm/exec.cc
+ifeq ($(CONFIG_DIFFTEST),y)
+RUNTIME_CXX_SRCS += sim/hm/cycle_difftest.cc
+endif
 endif
 INC_PATH := $(OPENGPU_HOME)/sw/include $(OPENGPU_HOME)/sw/runtime \
             $(OPENGPU_HOME)/sw/runtime/gpu $(OPENGPU_HOME)/sw/sim/sm
+INC_PATH += $(OPENGPU_HOME)/sw/sim/hm
 VERILATOR_INC_FLAGS :=
 ifeq ($(CONFIG_HM),y)
 VERILATOR_INC_FLAGS := -isystem $(VROOT)/include -isystem $(VROOT)/include/vltstd -I$(VBUILD)

@@ -38,3 +38,25 @@ module DpiGpuStoreTraceBB(
   always @(posedge clk)
     if (en) gpu_trace_store(hartid, addr, mask, data);
 endmodule
+
+// Keep the normalized DiffTest state inside RTL. As in source/YSYX/memu's
+// GPR/CSR bridges, an unpacked int array is copied into the C simulator by DPI.
+`ifdef CONFIG_DIFFTEST
+import "DPI-C" function void gpu_diff_state(input int base, input int state[]);
+module DpiGpuStateBB #(
+  parameter integer WORDS = 1,
+  parameter integer BASE = 0
+) (
+  input wire [WORDS*32-1:0] state
+);
+  int state_words [0:WORDS-1];
+  integer word;
+
+  always @(*) begin
+    for (word = 0; word < WORDS; word = word + 1)
+      state_words[word] = state[word*32 +: 32];
+  end
+
+  always @(*) gpu_diff_state(BASE, state_words);
+endmodule
+`endif

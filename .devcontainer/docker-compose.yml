@@ -1,0 +1,15 @@
+services:
+  OpenGPU:
+    image: opengpu:latest
+    container_name: opengpu-dev
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    hostname: dev
+    working_dir: /workspace/OpenGPU
+    command: sleep infinity
+    environment:
+      DISPLAY: ${DISPLAY:-}
+    volumes:
+      - ..:/workspace/OpenGPU
+      - /mnt/wslg/.X11-unix:/tmp/.X11-unix

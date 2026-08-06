@@ -25,7 +25,8 @@ module GPUTop #(
   GPUKmu #(.NUM_CORES(NUM_CORES)) kmu (
     .clock(clock), .reset(reset),
     .dcr(dcr_if), .kmu_if(kmu_if),
-    .launch(io_gpu_launch), .busy(kmu_busy));
+    .launch(io_gpu_launch), .busy(kmu_busy)
+  );
 
   genvar i;
   generate for (i=0;i<NUM_CORES;i=i+1) begin: cores
@@ -50,6 +51,14 @@ module GPUTop #(
       .issue_warp(io_gpu_issue_warp[i*((NUM_WARPS<=1)?1:$clog2(NUM_WARPS)) +: ((NUM_WARPS<=1)?1:$clog2(NUM_WARPS))]),
       .issue_mask(io_gpu_issue_mask[i*NUM_THREADS +: NUM_THREADS]));
   end endgenerate
+
+`ifdef CONFIG_DIFFTEST
+  wire [3*32-1:0] diff_state;
+  assign diff_state[0*32 +: 32] = 32'(io_gpu_busy);
+  assign diff_state[1*32 +: 32] = 32'(io_gpu_fault);
+  assign diff_state[2*32 +: 32] = 32'(io_gpu_done);
+  DpiGpuStateBB #(.WORDS(3), .BASE(0)) diff_bridge(.state(diff_state));
+`endif
 
   assign io_gpu_busy = kmu_busy;
   assign io_gpu_fault = |core_fault;

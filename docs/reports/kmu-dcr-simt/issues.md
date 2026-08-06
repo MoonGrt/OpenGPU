@@ -118,3 +118,61 @@
 - **Validation:** Configuration/build/run of vecadd on SM, SystemVerilog,
   Chisel, and SpinalHDL; all RTL backends passed full-PMEM DiffTest.
 - **Status:** Resolved.
+
+## I-011 — Combinational DPI scheduling lost a store observation
+
+- **Stage/backend:** Cycle DiffTest, SystemVerilog reference
+- **Symptom:** The first `vecadd` lockstep run reported one expected store and
+  no RTL store even though final PMEM had previously been correct.
+- **Root cause:** A stable combinational `wen` does not guarantee that
+  Verilator reevaluates the DPI block during the chosen capture phase.
+- **Resolution:** Sample normalized store fields from the C-side DPI snapshot
+  before the rising edge and suppress direct memory DPI stores while DiffTest
+  is enabled.
+- **Validation:** All six applications passed cycle lockstep on all backends.
+- **Status:** Resolved.
+
+## I-012 — SpinalHDL default bit-vector limit rejected the state ABI
+
+- **Stage/backend:** SpinalHDL state export
+- **Symptom:** Elaboration rejected the default configuration's 28,128-bit
+  normalized top-level state vector.
+- **Root cause:** SpinalHDL defaults `bitVectorWidthMax` below the required
+  state width.
+- **Resolution:** Raise the generation limit to one mebibit and retain the
+  identical packed ABI used by SystemVerilog and Chisel.
+- **Validation:** SpinalHDL elaboration, Verilator build, and full application
+  cycle-lockstep regression.
+- **Status:** Resolved.
+
+## I-013 — DiffTest state leaked into the public top-level interface
+
+- **Stage/backend:** Three-backend cycle DiffTest integration
+- **Symptom:** The normalized state was exposed as a very wide
+  `GPUTop.io_diff_state` output, coupling the public hardware boundary to the
+  simulator and inflating generated top-level interfaces.
+- **Root cause:** The initial implementation let `exec.cc` read a Verilated
+  output directly instead of using the project's DPI observation layer.
+- **Resolution:** Add a shared `DpiGpuStateBB`, convert the internal packed
+  state into an unpacked `int` array, and copy it into a C-side snapshot through
+  `gpu_diff_state`, following `source/YSYX/memu/vsrc/util/dpi.v`.
+- **Validation:** Generated top headers for all backends have no
+  `io_diff_state`; all expose the DPI prototype and pass 738-cycle `vecadd`
+  Lockstep plus final C ISS PMEM comparison.
+- **Status:** Resolved.
+
+## I-014 — A single DPI bridge still coupled module hierarchy
+
+- **Stage/backend:** Three-backend cycle DiffTest integration
+- **Symptom:** Although `io_diff_state` had been removed, KMU and Core state was
+  still routed to `GPUTop` and concatenated there for one DPI callback.
+- **Root cause:** The first DPI conversion preserved the original monolithic
+  top-level packing structure.
+- **Resolution:** Place independent DPI bridges in Top, KMU, and every Core.
+  Each callback supplies a fixed ABI base offset, and C assembles the disjoint
+  ranges. Wire `CONFIG_DIFFTEST` into SystemVerilog preprocessing and both Scala
+  elaborators so disabled builds contain no state packers or bridge instances.
+- **Validation:** All three backends pass the 738-cycle `vecadd` lockstep test
+  with DiffTest enabled. All three also pass `vecadd` with DiffTest disabled;
+  generated Chisel and SpinalHDL RTL contains no DiffTest bridge instance.
+- **Status:** Resolved.

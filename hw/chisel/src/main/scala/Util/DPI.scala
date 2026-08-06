@@ -33,3 +33,10 @@ class DpiGpuStoreTraceBB extends BlackBox {
     val data = Input(UInt(32.W))
   })
 }
+
+class DpiGpuStateBB(words: Int, base: Int)
+    extends BlackBox(Map("WORDS" -> words, "BASE" -> base)) {
+  val io = IO(new Bundle {
+    val state = Input(UInt((words * 32).W))
+  })
+}

@@ -12,3 +12,12 @@ class DpiMem extends BlackBox {
   }
   noIoPrefix()
 }
+
+class DpiGpuStateBB(words: Int, base: Int) extends BlackBox {
+  addGeneric("WORDS", words)
+  addGeneric("BASE", base)
+  val io = new Bundle {
+    val state = in Bits(words * 32 bits)
+  }
+  noIoPrefix()
+}

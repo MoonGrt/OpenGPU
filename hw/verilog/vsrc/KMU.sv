@@ -74,5 +74,29 @@ module GPUKmu #(
   end
 
   assign busy = running || (|kmu_if.core_busy);
+`ifdef CONFIG_DIFFTEST
+  wire [20*32-1:0] diff_state;
+  assign diff_state[0*32 +: 32] = kmu_if.startup_pc;
+  assign diff_state[1*32 +: 32] = kmu_if.args_addr;
+  assign diff_state[2*32 +: 32] = kmu_if.args_size;
+  assign diff_state[3*32 +: 32] = kmu_if.block_dim_x;
+  assign diff_state[4*32 +: 32] = kmu_if.block_dim_y;
+  assign diff_state[5*32 +: 32] = kmu_if.block_dim_z;
+  assign diff_state[6*32 +: 32] = kmu_if.grid_dim_x;
+  assign diff_state[7*32 +: 32] = kmu_if.grid_dim_y;
+  assign diff_state[8*32 +: 32] = kmu_if.grid_dim_z;
+  assign diff_state[9*32 +: 32] = kmu_if.block_size;
+  assign diff_state[10*32 +: 32] = kmu_if.block_idx_x;
+  assign diff_state[11*32 +: 32] = kmu_if.block_idx_y;
+  assign diff_state[12*32 +: 32] = kmu_if.block_idx_z;
+  assign diff_state[13*32 +: 32] = {31'b0, running};
+  assign diff_state[14*32 +: 32] = 32'(rr_core);
+  assign diff_state[15*32 +: 32] = 32'(kmu_if.cta_valid);
+  assign diff_state[16*32 +: 32] = 32'(kmu_if.core_ready);
+  assign diff_state[17*32 +: 32] = 32'(kmu_if.core_busy);
+  assign diff_state[18*32 +: 32] = {31'b0, busy};
+  assign diff_state[19*32 +: 32] = 32'(selected_core) | (32'(selected_valid) << 31);
+  DpiGpuStateBB #(.WORDS(20), .BASE(3)) diff_bridge(.state(diff_state));
+`endif
   wire _unused = &{1'b0, kmu_if.args_size};
 endmodule

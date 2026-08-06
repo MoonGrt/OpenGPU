@@ -1,0 +1,18 @@
+{
+  "name": "OpenGPU (Ubuntu 22.04)",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "OpenGPU",
+  "workspaceFolder": "/workspace/OpenGPU",
+  "shutdownAction": "stopCompose",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "scala-lang.scala",
+        "scalameta.metals",
+        "mshr-h.veriloghdl",
+        "ms-vscode.cpptools",
+        "mhutchie.git-graph"
+      ]
+    }
+  }
+}

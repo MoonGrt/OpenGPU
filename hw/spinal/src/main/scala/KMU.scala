@@ -2,8 +2,9 @@ package gpu
 
 import spinal.core._
 import gpu.interfaces.{CtaRequest, DcrWrite}
+import gpu.util.DpiGpuStateBB
 
-class Kmu(numCores: Int) extends Component {
+class Kmu(numCores: Int, difftest: Boolean) extends Component {
   private val cb = scala.math.max(1, log2Up(numCores))
   val io = new Bundle {
     val dcr = in(new DcrWrite)
@@ -71,5 +72,27 @@ class Kmu(numCores: Int) extends Component {
   io.cta.gridDim := gridDim
   io.cta.blockSize := blockSize
   io.busy := running || io.coreBusy.orR
+  if (difftest) {
+    val diff = Vec(UInt(32 bits), 20)
+    diff(0) := startupPc
+    diff(1) := argsAddr
+    diff(2) := argsSize
+    for (axis <- 0 until 3) {
+      diff(3 + axis) := blockDim(axis)
+      diff(6 + axis) := gridDim(axis)
+      diff(10 + axis) := blockIdx(axis)
+    }
+    diff(9) := blockSize
+    diff(13) := running.asUInt.resize(32)
+    diff(14) := rrCore.resize(32)
+    diff(15) := io.ctaValid.asUInt.resize(32)
+    diff(16) := io.coreReady.asUInt.resize(32)
+    diff(17) := io.coreBusy.asUInt.resize(32)
+    diff(18) := io.busy.asUInt.resize(32)
+    diff(19) := Mux(anyReady, selected.resize(32), U(0, 32 bits)) |
+      (anyReady.asUInt.resize(32) |<< 31)
+    val diffBridge = new DpiGpuStateBB(20, 3)
+    diffBridge.io.state := diff.asBits
+  }
   argsSize.addAttribute("keep")
 }

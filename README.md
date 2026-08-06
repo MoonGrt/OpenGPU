@@ -14,7 +14,7 @@ The project is intended for architecture experiments, RTL education, and backend
 - Shared PC, instruction, active mask, and deferred-path stack per warp
 - Independent thread coordinates, memory addresses, results, and 16 RV32E registers per SIMD lane
 - Native C/C++ runtime for allocation, transfers, kernel loading, launch, and synchronization
-- C ISS reference execution and optional full-PMEM DiffTest against RTL
+- Cycle-accurate C++ lockstep plus C ISS full-PMEM DiffTest against RTL
 - VCD waveform generation and instruction/store tracing
 - Self-checking tests for arithmetic, topology, work sizes, and divergence
 
@@ -36,6 +36,7 @@ make run
 A successful run ends with output similar to:
 
 ```text
+[DIFF] cycle lockstep matched for ... cycles
 [DIFF] C ISS and Core RTL PMEM match
 [HOST] vecadd n=35: PASS
 ```
@@ -49,7 +50,7 @@ make run TEST=topology
 
 ## How it works
 
-The host application uses the public runtime API to allocate device memory, upload data, load a kernel image, and launch it. For a hardware backend, the runtime snapshots PMEM, executes the kernel with the C ISS, restores the snapshot, and then runs the selected RTL through Verilator. When DiffTest is enabled, the complete final PMEM images are compared.
+The host application uses the public runtime API to allocate device memory, upload data, load a kernel image, and launch it. For a hardware backend, the runtime snapshots PMEM, executes the kernel with the C ISS, restores the snapshot, and then runs the selected RTL through Verilator. When DiffTest is enabled, an independent cycle model checks normalized DCR, KMU, Core, Warp, lane, register, path-stack, and memory-transaction state after every rising edge. Dirty PMEM bytes are checked each cycle and the complete final PMEM is compared with both reference models.
 
 For each launch, the Runtime copies `args_host` into an internal device scratch allocation, programs the KMU DCRs, and emits a launch pulse. The KMU walks CTAs in X→Y→Z order and dispatches them round-robin to ready cores. Each core hosts one CTA and schedules its active warps.
 

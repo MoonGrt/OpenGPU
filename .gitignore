@@ -22,6 +22,9 @@ sw/include/generated
 build
 source
 
+!.devcontainer/*
+!.clang-format
+
 # scala
 !*.mill
 !*.sbt

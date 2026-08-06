@@ -3,8 +3,10 @@ package gpu.riscv
 import spinal.core._
 import spinal.lib._
 import gpu.interfaces.CtaRequest
+import gpu.util.DpiGpuStateBB
 
-class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
+class GPUCore(coreId: Int, warps: Int, threads: Int, difftest: Boolean)
+    extends Component {
   private val contexts = warps * threads
   private val wb = scala.math.max(1, log2Up(warps))
   private val tb = scala.math.max(1, log2Up(threads))
@@ -12,6 +14,7 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
   private val rb = scala.math.max(1, log2Up(contexts * 16))
   private val stackDepth = 8
   private val sb = scala.math.max(1, log2Up(warps * stackDepth))
+  private val diffWords = 28 + 20 * warps + 20 * contexts
 
   val io = new Bundle {
     val ctaValid = in Bool()
@@ -117,8 +120,13 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
   val immJ = (inst(31) ## inst(19 downto 12) ## inst(20) ## inst(30 downto 21) ## False).asSInt.resize(32).asUInt
   val isLoad = opcode === U"7'b0000011"
   val isStore = opcode === U"7'b0100011"
-  val usesRd = opcode===U"7'b0110111" || opcode===U"7'b0010111" || opcode===U"7'b0010011" || opcode===U"7'b0110011" || opcode===U"7'b0000011" || opcode===U"7'b1101111" || opcode===U"7'b1100111" || opcode===U"7'b1110011"
-  val usesRs1 = opcode===U"7'b0010011" || opcode===U"7'b0110011" || opcode===U"7'b0000011" || opcode===U"7'b0100011" || opcode===U"7'b1100011" || opcode===U"7'b1100111"
+  val usesRd = opcode === U"7'b0110111" || opcode === U"7'b0010111" ||
+    opcode === U"7'b0010011" || opcode === U"7'b0110011" ||
+    opcode === U"7'b0000011" || opcode === U"7'b1101111" ||
+    opcode === U"7'b1100111" || opcode === U"7'b1110011"
+  val usesRs1 = opcode === U"7'b0010011" || opcode === U"7'b0110011" ||
+    opcode === U"7'b0000011" || opcode === U"7'b0100011" ||
+    opcode === U"7'b1100011" || opcode === U"7'b1100111"
   val usesRs2 = opcode===U"7'b0110011" || opcode===U"7'b0100011" || opcode===U"7'b1100011"
   val badReg = (usesRd && rd(4)) || (usesRs1 && rs1(4)) || (usesRs2 && rs2(4))
 
@@ -205,8 +213,32 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
           switch(opcode) {
             is(U"7'b0110111"){result:=(inst(31 downto 12)##U(0,12 bits)).asUInt}
             is(U"7'b0010111"){result:=ip+(inst(31 downto 12)##U(0,12 bits)).asUInt}
-            is(U"7'b0010011"){switch(f3){is(0){result:=a+immI};is(2){result:=Mux(a.asSInt<immI.asSInt,U(1,32 bits),U(0,32 bits))};is(3){result:=Mux(a<immI,U(1,32 bits),U(0,32 bits))};is(4){result:=a^immI};is(6){result:=a|immI};is(7){result:=a&immI};is(1){result:=a|<<inst(24 downto 20)};is(5){result:=Mux(inst(30),(a.asSInt>>inst(24 downto 20)).asUInt,a>>inst(24 downto 20))}}}
-            is(U"7'b0110011"){switch(f3){is(0){result:=Mux(f7===U"7'b0100000",a-bv,a+bv)};is(1){result:=a|<<bv(4 downto 0)};is(2){result:=Mux(a.asSInt<bv.asSInt,U(1,32 bits),U(0,32 bits))};is(3){result:=Mux(a<bv,U(1,32 bits),U(0,32 bits))};is(4){result:=a^bv};is(5){result:=Mux(f7===U"7'b0100000",(a.asSInt>>bv(4 downto 0)).asUInt,a>>bv(4 downto 0))};is(6){result:=a|bv};is(7){result:=a&bv}}}
+            is(U"7'b0010011") {
+              switch(f3) {
+                is(0) { result := a + immI }
+                is(1) { result := a |<< inst(24 downto 20) }
+                is(2) { result := Mux(a.asSInt < immI.asSInt, U(1, 32 bits), U(0, 32 bits)) }
+                is(3) { result := Mux(a < immI, U(1, 32 bits), U(0, 32 bits)) }
+                is(4) { result := a ^ immI }
+                is(5) { result := Mux(inst(30), (a.asSInt >> inst(24 downto 20)).asUInt,
+                  a >> inst(24 downto 20)) }
+                is(6) { result := a | immI }
+                is(7) { result := a & immI }
+              }
+            }
+            is(U"7'b0110011") {
+              switch(f3) {
+                is(0) { result := Mux(f7 === U"7'b0100000", a - bv, a + bv) }
+                is(1) { result := a |<< bv(4 downto 0) }
+                is(2) { result := Mux(a.asSInt < bv.asSInt, U(1, 32 bits), U(0, 32 bits)) }
+                is(3) { result := Mux(a < bv, U(1, 32 bits), U(0, 32 bits)) }
+                is(4) { result := a ^ bv }
+                is(5) { result := Mux(f7 === U"7'b0100000",
+                  (a.asSInt >> bv(4 downto 0)).asUInt, a >> bv(4 downto 0)) }
+                is(6) { result := a | bv }
+                is(7) { result := a & bv }
+              }
+            }
             is(U"7'b1101111"){result:=ip+4}
             is(U"7'b1100111"){result:=ip+4}
             is(U"7'b1110011"){
@@ -216,7 +248,12 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
                 is(U(0xcc3)){result:=blockIdx(0)};is(U(0xcc4)){result:=blockIdx(1)};is(U(0xcc5)){result:=blockIdx(2)}
                 is(U(0xcc6)){result:=blockDim(0)};is(U(0xcc7)){result:=blockDim(1)};is(U(0xcc8)){result:=blockDim(2)}
                 is(U(0xcc9)){result:=gridDim(0)};is(U(0xcca)){result:=gridDim(1)};is(U(0xccb)){result:=gridDim(2)}
-                is(U(0xccc)){result:=argsAddr};is(U(0xccd)){result:=(U(coreId*warps*threads,32 bits)+(iw.resize(32)*U(threads,32 bits)).resize(32)+U(t,32 bits)).resize(32)}
+                is(U(0xccc)) { result := argsAddr }
+                is(U(0xccd)) {
+                  result := (U(coreId * warps * threads, 32 bits) +
+                    (iw.resize(32) * U(threads, 32 bits)).resize(32) +
+                    U(t, 32 bits)).resize(32)
+                }
                 is(U(0xcce)){result:=iw.resize(32)};is(U(0xccf)){result:=U(t,32 bits)}
                 default{good:=False}
               }
@@ -244,9 +281,77 @@ class GPUCore(coreId: Int, warps: Int, threads: Int) extends Component {
     is(4) {
       val c=ctx(mt);val b0=base(c);val addr=regs((b0+rs1(3 downto 0)).resized)+Mux(isLoad,immI,immS)
       val shifted=memReadData>>(addr(1 downto 0)<<3);val loaded=UInt(32 bits);loaded:=memReadData
-      switch(f3){is(0){loaded:=shifted(7 downto 0).asSInt.resize(32).asUInt};is(1){loaded:=shifted(15 downto 0).asSInt.resize(32).asUInt};is(4){loaded:=shifted(7 downto 0).resize(32)};is(5){loaded:=shifted(15 downto 0).resize(32)}}
+      switch(f3) {
+        is(0) { loaded := shifted(7 downto 0).asSInt.resize(32).asUInt }
+        is(1) { loaded := shifted(15 downto 0).asSInt.resize(32).asUInt }
+        is(4) { loaded := shifted(7 downto 0).resize(32) }
+        is(5) { loaded := shifted(15 downto 0).resize(32) }
+      }
       when(isLoad&&rd=/=0){regs((b0+rd(3 downto 0)).resized):=loaded};regs(b0):=U(0,32 bits)
       when(mt===threads-1){wPc(iw):=ip+4;advanceWarp()}otherwise{mt:=mt+1;state:=3}
     }
+  }
+
+  if (difftest) {
+    val diff = Vec(UInt(32 bits), diffWords)
+    diff(0) := state.resize(32)
+    diff(1) := ctaActive.asUInt.resize(32)
+    diff(2) := faultR.asUInt.resize(32)
+    diff(3) := rr.resize(32)
+    diff(4) := iw.resize(32)
+    diff(5) := im.asUInt.resize(32)
+    diff(6) := ip
+    diff(7) := inst
+    diff(8) := mt.resize(32)
+    for (axis <- 0 until 3) {
+      diff(9 + axis) := blockIdx(axis)
+      diff(12 + axis) := blockDim(axis)
+      diff(15 + axis) := gridDim(axis)
+    }
+    diff(18) := argsAddr
+    diff(19) := warpValid.asBits.asUInt.resize(32)
+    diff(20) := (state === 1).asUInt.resize(32)
+    diff(21) := ip
+    for (word <- 22 to 27) diff(word) := 0
+    val diffActive = laneActive(mt)
+    val diffAddr = regs((base(ctx(mt)) + rs1(3 downto 0)).resized) +
+      Mux(isLoad, immI, immS)
+    when((state === 3 || state === 4) && diffActive) {
+      diff(22) := (isLoad && state === 3).asUInt.resize(32)
+      diff(23) := (isStore && state === 3).asUInt.resize(32)
+      diff(24) := Mux(
+        f3 === 0,
+        U(1, 32 bits) |<< diffAddr(1 downto 0),
+        Mux(f3 === 1, U(3, 32 bits) |<< diffAddr(1 downto 0), U(15, 32 bits)))
+      diff(25) := diffAddr & U(0xfffffffcL, 32 bits)
+      diff(26) := regs((base(ctx(mt)) + rs2(3 downto 0)).resized) |<<
+        (diffAddr(1 downto 0) << 3)
+      when(isLoad && state === 4) {
+        diff(27) := memReadData
+      }
+    }
+    for (warp <- 0 until warps) {
+      val baseWord = 28 + warp * 20
+      diff(baseWord) := warpValid(warp).asUInt.resize(32)
+      diff(baseWord + 1) := warpPc(warp)
+      diff(baseWord + 2) := warpMask(warp).asUInt.resize(32)
+      diff(baseWord + 3) := stackSp(warp).resize(32)
+      for (entry <- 0 until stackDepth) {
+        diff(baseWord + 4 + entry * 2) := stackPc(warp * stackDepth + entry)
+        diff(baseWord + 5 + entry * 2) :=
+          stackMask(warp * stackDepth + entry).asUInt.resize(32)
+      }
+    }
+    for (context <- 0 until contexts) {
+      val baseWord = 28 + 20 * warps + context * 20
+      diff(baseWord) := threadX(context)
+      diff(baseWord + 1) := threadY(context)
+      diff(baseWord + 2) := threadZ(context)
+      diff(baseWord + 3) := globalId(context)
+      for (register <- 0 until 16)
+        diff(baseWord + 4 + register) := regs(context * 16 + register)
+    }
+    val diffBridge = new DpiGpuStateBB(diffWords, 23 + coreId * diffWords)
+    diffBridge.io.state := diff.asBits
   }
 }

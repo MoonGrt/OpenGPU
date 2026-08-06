@@ -52,9 +52,12 @@ endmenu
 
 menu "Trace & Debug"
 config DIFFTEST
-  bool "Compare RTL final PMEM against the C ISS"
+  bool "Cycle-lock RTL state and compare final PMEM against the C ISS"
   depends on HM
   default y
+  help
+    Enable module-local DPI state capture and cycle-level lockstep checking.
+    Disable this option to omit DiffTest state packing and DPI bridge instances.
 config WAVE
   bool "Generate RTL VCD waveform"
   depends on HM

@@ -30,6 +30,9 @@ VLIB := $(VBUILD)/libV$(VTOP).a
 
 VERILATOR_CFLAGS := -cc -MMD -O3 --x-assign fast --x-initial fast \
                     --timescale "1ns/1ns" --autoflush --unroll-count 1024 -j 1
+ifeq ($(CONFIG_DIFFTEST),y)
+VERILATOR_CFLAGS += -DCONFIG_DIFFTEST
+endif
 ifeq ($(CONFIG_WAVE),y)
 VERILATOR_CFLAGS += --trace
 endif

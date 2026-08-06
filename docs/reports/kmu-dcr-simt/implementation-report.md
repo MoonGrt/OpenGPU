@@ -120,6 +120,56 @@ The post-layout-refactor smoke regression passed `vecadd` on the software
 model and all three RTL backends at the new 2×4×4 default. Each RTL run also
 passed full-PMEM DiffTest.
 
+## Cycle-level full-state DiffTest
+
+`CONFIG_DIFFTEST` now runs an independent cycle-accurate C++ model alongside
+the functional C ISS. Each backend assembles the same packed 32-bit word ABI
+for DCR/KMU state, normalized Core FSM and memory state, every Warp PC/mask/path
+stack, every Lane coordinate, and all sixteen RV32E registers. Module-local DPI
+bridges in the Top, KMU, and each Core copy disjoint ABI ranges directly into C;
+the state is neither exposed through `GPUTop` nor routed between RTL modules.
+The Runtime advances the model on every rising edge and stops at the first
+mismatching word with the cycle and hierarchical field path.
+
+Stores are sampled from normalized pre-edge state instead of DPI callback
+scheduling. Reference and RTL transactions are checked before dirty PMEM bytes
+are compared. A complete PMEM scan remains at completion, followed by the C ISS
+final-PMEM comparison. This preserves a per-cycle PMEM invariant without
+scanning all 128 MiB every cycle.
+
+The default 2 Core × 4 Warp × 4 Lane configuration passed `vecadd`, `vecsub`,
+`bitxor`, `sizes`, `topology`, and `divergence` on SystemVerilog, Chisel, and
+SpinalHDL with cycle lockstep enabled.
+
+The cross-backend `vecadd` timing checks matched exactly: 738 cycles for the
+default 2×4×4 topology and 2,871 cycles for 1×1×1. A Verilog `vecadd` run with
+`CONFIG_DIFFTEST` disabled also passed on all three RTL backends. In that mode,
+SystemVerilog preprocessing and Chisel/SpinalHDL elaboration remove state
+packing and every `DpiGpuStateBB` instance.
+
+## Readability pass
+
+A repository-level C/C++ formatting policy now fixes indentation, brace style,
+and a 100-column limit. The cycle model and Runtime driver were reformatted;
+the model's helper names and phase comments now describe sign extension, Lane
+register access, memory addressing, CTA admission, Core stepping, and ABI
+packing directly. The added DiffTest packing logic in all three HDL backends
+was expanded into named loops and one assignment per line. Existing compressed
+RISC-V decode and load-result cases in SystemVerilog and SpinalHDL were also
+split into conventional switch/case blocks. No maintained C/C++, Scala, or
+SystemVerilog source line remains longer than 160 characters.
+
+The exact state layout is documented in `difftest-state-abi.md`. After the
+readability-only edits, all three backends still passed `vecadd` in 738 cycles
+with cycle lockstep and final C ISS PMEM comparison.
+
+The first implementation exposed the packed state as the top-level
+`io_diff_state` output. It was replaced with the same DPI array-copy pattern
+used by `source/YSYX/memu` for GPR/CSR synchronization, then distributed into
+the owning Top, KMU, and Core modules. Generated Verilator headers for all three
+backends now contain `gpu_diff_state(int base, const svOpenArrayHandle)` and no
+`io_diff_state` member.
+
 ## Deviations and remaining work
 
 - The C ISS models launch-global contexts and final functional state, not the

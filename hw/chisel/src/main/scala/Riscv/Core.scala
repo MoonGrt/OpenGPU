@@ -4,8 +4,9 @@ import chisel3._
 import chisel3.util._
 import gpu.interfaces.CtaRequest
 import gpu.perip.mem.{DataBus, InstBus}
+import gpu.util.DpiGpuStateBB
 
-class GPUCore(coreId: Int, numWarps: Int, numThreads: Int) extends Module {
+class GPUCore(coreId: Int, numWarps: Int, numThreads: Int, difftest: Boolean) extends Module {
   private val DataWidth = 32
   private val NumRegs = 16
   private val NumContexts = numWarps * numThreads
@@ -16,6 +17,7 @@ class GPUCore(coreId: Int, numWarps: Int, numThreads: Int) extends Module {
   private val StackDepth = 8
   private val StackBits = 4
   private val StackIndexBits = math.max(1, log2Ceil(numWarps * StackDepth))
+  private val DiffWords = 28 + 20 * numWarps + 20 * NumContexts
 
   val io = IO(new Bundle {
     val cta = Flipped(Decoupled(new CtaRequest))
@@ -29,21 +31,21 @@ class GPUCore(coreId: Int, numWarps: Int, numThreads: Int) extends Module {
     val issueMask = Output(UInt(numThreads.W))
   })
 
-  val warpPc = Reg(Vec(numWarps, UInt(32.W)))
-  val warpMask = Reg(Vec(numWarps, UInt(numThreads.W)))
+  val warpPc = RegInit(VecInit(Seq.fill(numWarps)(0.U(32.W))))
+  val warpMask = RegInit(VecInit(Seq.fill(numWarps)(0.U(numThreads.W))))
   val warpValid = RegInit(VecInit(Seq.fill(numWarps)(false.B)))
   val stackSp = RegInit(VecInit(Seq.fill(numWarps)(0.U(StackBits.W))))
-  val stackPc = Reg(Vec(numWarps * StackDepth, UInt(32.W)))
-  val stackMask = Reg(Vec(numWarps * StackDepth, UInt(numThreads.W)))
+  val stackPc = RegInit(VecInit(Seq.fill(numWarps * StackDepth)(0.U(32.W))))
+  val stackMask = RegInit(VecInit(Seq.fill(numWarps * StackDepth)(0.U(numThreads.W))))
   val gprs = RegInit(VecInit(Seq.fill(NumContexts * NumRegs)(0.U(32.W))))
-  val threadX = Reg(Vec(NumContexts, UInt(32.W)))
-  val threadY = Reg(Vec(NumContexts, UInt(32.W)))
-  val threadZ = Reg(Vec(NumContexts, UInt(32.W)))
-  val globalId = Reg(Vec(NumContexts, UInt(32.W)))
-  val blockIdx = Reg(Vec(3, UInt(32.W)))
-  val blockDim = Reg(Vec(3, UInt(32.W)))
-  val gridDim = Reg(Vec(3, UInt(32.W)))
-  val argsAddr = Reg(UInt(32.W))
+  val threadX = RegInit(VecInit(Seq.fill(NumContexts)(0.U(32.W))))
+  val threadY = RegInit(VecInit(Seq.fill(NumContexts)(0.U(32.W))))
+  val threadZ = RegInit(VecInit(Seq.fill(NumContexts)(0.U(32.W))))
+  val globalId = RegInit(VecInit(Seq.fill(NumContexts)(0.U(32.W))))
+  val blockIdx = RegInit(VecInit(Seq.fill(3)(0.U(32.W))))
+  val blockDim = RegInit(VecInit(Seq.fill(3)(1.U(32.W))))
+  val gridDim = RegInit(VecInit(Seq.fill(3)(1.U(32.W))))
+  val argsAddr = RegInit(0.U(32.W))
 
   val ctaActive = RegInit(false.B)
   val fault = RegInit(false.B)
@@ -58,8 +60,8 @@ class GPUCore(coreId: Int, numWarps: Int, numThreads: Int) extends Module {
   val rrWarp = RegInit(0.U(WarpBits.W))
   val issueWarp = RegInit(0.U(WarpBits.W))
   val issueMask = RegInit(0.U(numThreads.W))
-  val issuePc = Reg(UInt(32.W))
-  val issueInst = Reg(UInt(32.W))
+  val issuePc = RegInit(0.U(32.W))
+  val issueInst = RegInit(0.U(32.W))
   val memThread = RegInit(0.U(ThreadBits.W))
   io.issueWarp := issueWarp
   io.issueMask := issueMask
@@ -287,5 +289,61 @@ class GPUCore(coreId: Int, numWarps: Int, numThreads: Int) extends Module {
     when(isLoad && rd=/=0.U){gprs((memBase+rd(3,0))(RegBits-1,0)):=loaded}
     gprs(memBase):=0.U
     advanceMem()
+  }
+
+  if (difftest) {
+    val diff = Wire(Vec(DiffWords, UInt(32.W)))
+    diff.foreach(_ := 0.U)
+    diff(0) := state
+    diff(1) := ctaActive
+    diff(2) := fault
+    diff(3) := rrWarp
+    diff(4) := issueWarp
+    diff(5) := issueMask
+    diff(6) := issuePc
+    diff(7) := issueInst
+    diff(8) := memThread
+    for (axis <- 0 until 3) {
+      diff(9 + axis) := blockIdx(axis)
+      diff(12 + axis) := blockDim(axis)
+      diff(15 + axis) := gridDim(axis)
+    }
+    diff(18) := argsAddr
+    diff(19) := warpValid.asUInt
+    diff(20) := state === sFetch
+    diff(21) := issuePc
+    val diffLaneActive = issueMask(memThread)
+    when((state === sMemReq || state === sMemResp) && diffLaneActive) {
+      diff(22) := isLoad && state === sMemReq
+      diff(23) := isStore && state === sMemReq
+      diff(24) := io.dbus.req.bits.mask
+      diff(25) := io.dbus.req.bits.addr
+      diff(26) := io.dbus.req.bits.wdata
+      when(isLoad && state === sMemResp) {
+        diff(27) := io.dbus.resp.bits.rdata
+      }
+    }
+    for (warp <- 0 until numWarps) {
+      val base = 28 + warp * 20
+      diff(base) := warpValid(warp)
+      diff(base + 1) := warpPc(warp)
+      diff(base + 2) := warpMask(warp)
+      diff(base + 3) := stackSp(warp)
+      for (entry <- 0 until StackDepth) {
+        diff(base + 4 + entry * 2) := stackPc(warp * StackDepth + entry)
+        diff(base + 5 + entry * 2) := stackMask(warp * StackDepth + entry)
+      }
+    }
+    for (context <- 0 until NumContexts) {
+      val base = 28 + 20 * numWarps + context * 20
+      diff(base) := threadX(context)
+      diff(base + 1) := threadY(context)
+      diff(base + 2) := threadZ(context)
+      diff(base + 3) := globalId(context)
+      for (register <- 0 until NumRegs)
+        diff(base + 4 + register) := gprs(context * NumRegs + register)
+    }
+    val diffBridge = Module(new DpiGpuStateBB(DiffWords, 23 + coreId * DiffWords))
+    diffBridge.io.state := diff.asUInt
   }
 }
