@@ -1,7 +1,7 @@
 #include <common.h>
 #include <device/memory.h>
 #include <gpu.h>
-#include <gpu_iss.h>
+#include <model.h>
 #include <runtime.h>
 
 #define GPU_NUM_HARTS (CONFIG_GPU_NUM_CORES * CONFIG_GPU_NUM_WARPS * CONFIG_GPU_NUM_THREADS)
@@ -13,16 +13,6 @@
 #endif
 #if (CONFIG_GPU_NUM_THREADS & (CONFIG_GPU_NUM_THREADS - 1)) != 0
 #error "CONFIG_GPU_NUM_THREADS must be a power of two"
-#endif
-
-#if defined(CONFIG_HM)
-void rtl_init(int argc, char **argv);
-void rtl_exit(void);
-void gpu_rtl_init(void);
-bool gpu_rtl_launch(uint32_t entry);
-bool gpu_rtl_wait(uint64_t max_cycles);
-void gpu_rtl_dcr_write(uint32_t addr, uint32_t data);
-bool gpu_rtl_fault(void);
 #endif
 
 typedef struct {
@@ -53,6 +43,10 @@ struct gpu_device {
 };
 
 static struct gpu_device singleton;
+static gpu_model_t *execution_model;
+#if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
+static gpu_model_t *reference_model;
+#endif
 static bool runtime_initialized;
 static bool trace_requested;
 static bool trace_suppressed;
@@ -104,13 +98,24 @@ static void raw_write(uint32_t address, const void *source, size_t size) {
   memcpy(guest_to_host(address), source, size);
 }
 
-#if defined(CONFIG_SM) || defined(CONFIG_DIFFTEST)
-static bool run_iss_to_completion(void) {
-  for (uint64_t step = 0; step < GPU_WAIT_LIMIT && !gpu_iss_done(); ++step)
-    gpu_iss_step();
-  return gpu_iss_done();
+static void configure_model(gpu_model_t *model,
+                            uint32_t entry,
+                            uint32_t args_addr,
+                            uint32_t args_size,
+                            const uint32_t grid_dim[3],
+                            const uint32_t block_dim[3],
+                            uint32_t block_size) {
+  gpu_model_dcr_write(model, GPU_DCR_STARTUP_PC, entry);
+  gpu_model_dcr_write(model, GPU_DCR_ARGS_ADDR, args_addr);
+  gpu_model_dcr_write(model, GPU_DCR_ARGS_SIZE, args_size);
+  gpu_model_dcr_write(model, GPU_DCR_BLOCK_DIM_X, block_dim[0]);
+  gpu_model_dcr_write(model, GPU_DCR_BLOCK_DIM_Y, block_dim[1]);
+  gpu_model_dcr_write(model, GPU_DCR_BLOCK_DIM_Z, block_dim[2]);
+  gpu_model_dcr_write(model, GPU_DCR_GRID_DIM_X, grid_dim[0]);
+  gpu_model_dcr_write(model, GPU_DCR_GRID_DIM_Y, grid_dim[1]);
+  gpu_model_dcr_write(model, GPU_DCR_GRID_DIM_Z, grid_dim[2]);
+  gpu_model_dcr_write(model, GPU_DCR_BLOCK_SIZE, block_size);
 }
-#endif
 
 const char *gpu_result_string(gpu_result_t result) {
   switch (result) {
@@ -170,10 +175,26 @@ int memu_runtime_init(int argc, char **argv, int *app_argc, char ***app_argv) {
 
   init_mem();
 #if defined(CONFIG_HM)
-  rtl_init(output, argv);
-  gpu_rtl_init();
+  execution_model = gpu_model_create(GPU_MODEL_HM);
 #else
-  gpu_iss_init(GPU_NUM_HARTS);
+  execution_model = gpu_model_create(GPU_MODEL_SM);
+#endif
+  if (!execution_model || !gpu_model_init(execution_model, GPU_NUM_HARTS, output, argv)) {
+    gpu_model_destroy(execution_model);
+    execution_model = NULL;
+    free_mem();
+    return -1;
+  }
+#if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
+  reference_model = gpu_model_create(GPU_MODEL_SM);
+  if (!reference_model || !gpu_model_init(reference_model, GPU_NUM_HARTS, output, argv)) {
+    gpu_model_destroy(reference_model);
+    reference_model = NULL;
+    gpu_model_destroy(execution_model);
+    execution_model = NULL;
+    free_mem();
+    return -1;
+  }
 #endif
   memset(&singleton, 0, sizeof(singleton));
   runtime_initialized = true;
@@ -185,8 +206,11 @@ void memu_runtime_fini(void) {
     return;
   if (singleton.opened)
     (void)gpu_device_close(&singleton);
-#if defined(CONFIG_HM)
-  rtl_exit();
+  gpu_model_destroy(execution_model);
+  execution_model = NULL;
+#if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
+  gpu_model_destroy(reference_model);
+  reference_model = NULL;
 #endif
   free_mem();
   runtime_initialized = false;
@@ -389,18 +413,21 @@ gpu_result_t gpu_launch(gpu_device_h device, gpu_kernel_h kernel, const gpu_laun
     device->launch_args_used = true;
     raw_write(device->launch_args, info->args_host, info->args_size);
   }
-  gpu_iss_configure(device->launch_args, info->grid_dim, info->block_dim);
-#if defined(CONFIG_HM)
-  gpu_rtl_dcr_write(GPU_DCR_STARTUP_PC, kernel->entry);
-  gpu_rtl_dcr_write(GPU_DCR_ARGS_ADDR, device->launch_args);
-  gpu_rtl_dcr_write(GPU_DCR_ARGS_SIZE, (uint32_t)info->args_size);
-  gpu_rtl_dcr_write(GPU_DCR_BLOCK_DIM_X, info->block_dim[0]);
-  gpu_rtl_dcr_write(GPU_DCR_BLOCK_DIM_Y, info->block_dim[1]);
-  gpu_rtl_dcr_write(GPU_DCR_BLOCK_DIM_Z, info->block_dim[2]);
-  gpu_rtl_dcr_write(GPU_DCR_GRID_DIM_X, info->grid_dim[0]);
-  gpu_rtl_dcr_write(GPU_DCR_GRID_DIM_Y, info->grid_dim[1]);
-  gpu_rtl_dcr_write(GPU_DCR_GRID_DIM_Z, info->grid_dim[2]);
-  gpu_rtl_dcr_write(GPU_DCR_BLOCK_SIZE, block_size);
+  configure_model(execution_model,
+                  kernel->entry,
+                  device->launch_args,
+                  (uint32_t)info->args_size,
+                  info->grid_dim,
+                  info->block_dim,
+                  block_size);
+#if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
+  configure_model(reference_model,
+                  kernel->entry,
+                  device->launch_args,
+                  (uint32_t)info->args_size,
+                  info->grid_dim,
+                  info->block_dim,
+                  block_size);
 #endif
   trace_events = 0;
 
@@ -416,10 +443,9 @@ gpu_result_t gpu_launch(gpu_device_h device, gpu_kernel_h kernel, const gpu_laun
   }
   memcpy(initial, guest_to_host(CONFIG_MBASE), CONFIG_MSIZE);
   gpu_trace_suppress(true);
-  gpu_iss_init(GPU_NUM_HARTS);
-  gpu_iss_launch(kernel->entry);
-  bool reference_done = run_iss_to_completion();
-  device->reference_fault = gpu_iss_fault();
+  bool reference_started = gpu_model_launch(reference_model);
+  bool reference_done = reference_started && gpu_model_wait(reference_model, GPU_WAIT_LIMIT);
+  device->reference_fault = gpu_model_fault(reference_model);
   gpu_trace_suppress(false);
   if (!reference_done) {
     free(initial);
@@ -431,20 +457,19 @@ gpu_result_t gpu_launch(gpu_device_h device, gpu_kernel_h kernel, const gpu_laun
   memcpy(device->reference, guest_to_host(CONFIG_MBASE), CONFIG_MSIZE);
   memcpy(guest_to_host(CONFIG_MBASE), initial, CONFIG_MSIZE);
   free(initial);
-  if (!gpu_rtl_launch(kernel->entry)) {
+  if (!gpu_model_launch(execution_model)) {
     free(device->reference);
     device->reference = NULL;
     release_launch_args(device);
     return GPU_ERROR_BACKEND;
   }
 #elif defined(CONFIG_HM)
-  if (!gpu_rtl_launch(kernel->entry)) {
+  if (!gpu_model_launch(execution_model)) {
     release_launch_args(device);
     return GPU_ERROR_BACKEND;
   }
 #else
-  gpu_iss_init(GPU_NUM_HARTS);
-  if (!gpu_iss_launch(kernel->entry)) {
+  if (!gpu_model_launch(execution_model)) {
     release_launch_args(device);
     return GPU_ERROR_BACKEND;
   }
@@ -456,11 +481,7 @@ gpu_result_t gpu_launch(gpu_device_h device, gpu_kernel_h kernel, const gpu_laun
 gpu_result_t gpu_wait(gpu_device_h device) {
   if (!valid_device(device) || !device->running)
     return GPU_ERROR_BAD_STATE;
-#if defined(CONFIG_HM)
-  bool completed = gpu_rtl_wait(GPU_WAIT_LIMIT);
-#else
-  bool completed = run_iss_to_completion();
-#endif
+  bool completed = gpu_model_wait(execution_model, GPU_WAIT_LIMIT);
   device->running = false;
   release_launch_args(device);
   if (!completed) {
@@ -468,16 +489,10 @@ gpu_result_t gpu_wait(gpu_device_h device) {
     free(device->reference);
     device->reference = NULL;
 #endif
-#if defined(CONFIG_HM)
-    return gpu_rtl_fault() ? GPU_ERROR_BACKEND : GPU_ERROR_TIMEOUT;
-#else
-    return gpu_iss_fault() ? GPU_ERROR_BACKEND : GPU_ERROR_TIMEOUT;
-#endif
+    return gpu_model_fault(execution_model) ? GPU_ERROR_BACKEND : GPU_ERROR_TIMEOUT;
   }
-#if !defined(CONFIG_HM)
-  if (gpu_iss_fault())
+  if (gpu_model_fault(execution_model))
     return GPU_ERROR_BACKEND;
-#endif
 
 #if defined(CONFIG_HM) && defined(CONFIG_DIFFTEST)
   if (device->reference_fault) {

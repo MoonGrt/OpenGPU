@@ -35,7 +35,7 @@
 - **Stage/backend:** Cross-backend regression
 - **Symptom:** After running SpinalHDL, a SystemVerilog topology launch completed without executing any CTA and DiffTest reported untouched output memory.
 - **Reproduction:** Run a SpinalHDL test, then `make BACKEND=verilog -C tests/topology run` without cleaning `sw/build`.
-- **Root cause:** All backends shared `sw/build/obj-runtime`; `exec.cc` was therefore compiled against one backend's generated `VGPUTop.h` and later linked to another backend's model. The software build also treated an existing Verilator archive as source-independent. Generated class layouts are not ABI-compatible even when their logical ports match.
+- **Root cause:** All backends shared `sw/build/obj-runtime`; `rtl.cpp` was therefore compiled against one backend's generated `VGPUTop.h` and later linked to another backend's model. The software build also treated an existing Verilator archive as source-independent. Generated class layouts are not ABI-compatible even when their logical ports match.
 - **Resolution:** Isolate Runtime objects under `obj-runtime/<backend>`, produce a backend-specific Runtime archive, force the hardware makefile to check Scala/RTL prerequisites before compiling the harness, and give every backend the common top-level clock name `clock`.
 - **Validation:** Run the complete test suite in the order SystemVerilog → Chisel → SpinalHDL → SystemVerilog without cleaning between backends.
 - **Status:** Resolved; cross-backend regression passed.
@@ -74,13 +74,13 @@
 
 - **Stage/backend:** Simulation-model directory refactor
 - **Symptom:** Incremental Runtime builds requested removed
-  `sw/runtime/gpu/gpu_iss.h` and `sw/runtime/gpu/include/gpu.h` paths.
+  `sw/sim/model.h` and `sw/runtime/gpu/include/gpu.h` paths.
 - **Reproduction:** Move the ISS sources to `sw/sim/sm` while retaining an
   existing `sw/build/obj-runtime` tree, then run `make run TEST=vecadd`.
 - **Root cause:** Compiler-generated `.d` files contained old absolute header
   paths from builds predating the directory refactors.
 - **Resolution:** Remove the generated Runtime build cache once after the
-  source move; fresh dependency files now reference `sw/sim/sm/gpu_iss.h`.
+  source move; fresh dependency files now reference `sw/sim/model.h`.
 - **Validation:** Clean-build and run `vecadd` on SM, Chisel, SystemVerilog,
   and SpinalHDL.
 - **Status:** Resolved.
@@ -151,7 +151,7 @@
 - **Symptom:** The normalized state was exposed as a very wide
   `GPUTop.io_diff_state` output, coupling the public hardware boundary to the
   simulator and inflating generated top-level interfaces.
-- **Root cause:** The initial implementation let `exec.cc` read a Verilated
+- **Root cause:** The initial implementation let `rtl.cpp` read a Verilated
   output directly instead of using the project's DPI observation layer.
 - **Resolution:** Add a shared `DpiGpuStateBB`, convert the internal packed
   state into an unpacked `int` array, and copy it into a C-side snapshot through
@@ -175,4 +175,20 @@
 - **Validation:** All three backends pass the 738-cycle `vecadd` lockstep test
   with DiffTest enabled. All three also pass `vecadd` with DiffTest disabled;
   generated Chisel and SpinalHDL RTL contains no DiffTest bridge instance.
+- **Status:** Resolved.
+
+## I-015 — HM and SM used different launch interfaces
+
+- **Stage/backend:** Runtime model abstraction
+- **Symptom:** HM accepted launch metadata through DCR writes, while SM used
+  `gpu_iss_configure()` plus a direct entry argument to `gpu_iss_launch()`.
+- **Root cause:** The functional ISS predated the KMU DCR ABI and remained
+  wired directly into Runtime backend conditionals.
+- **Resolution:** Add an opaque `gpu_model_t` adapter with identical lifecycle,
+  DCR, launch, wait, and fault operations for both backends. Add the frozen DCR
+  register mirror to SM and use separate HM execution and SM reference handles
+  during DiffTest.
+- **Validation:** `vecadd` passes on HM and SM. The two-launch `topology` test
+  passes on both; HM matches cycle DiffTest for 8,170 and 3,761 cycles and also
+  matches the functional SM PMEM reference.
 - **Status:** Resolved.

@@ -1,5 +1,5 @@
-#ifndef __MEMU_GPU_ISS_H__
-#define __MEMU_GPU_ISS_H__
+#ifndef OPENGPU_SIM_SM_BACKEND_H
+#define OPENGPU_SIM_SM_BACKEND_H
 
 #include <common.h>
 
@@ -18,13 +18,20 @@ typedef struct {
   bool halted;
 } gpu_iss_core_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void gpu_iss_init(uint32_t num_cores);
-void gpu_iss_configure(uint32_t args_addr,
-    const uint32_t grid_dim[3], const uint32_t block_dim[3]);
-bool gpu_iss_launch(uint32_t entry);
+void gpu_iss_dcr_write(uint32_t addr, uint32_t data);
+bool gpu_iss_launch(void);
 bool gpu_iss_step(void);
 bool gpu_iss_done(void);
 bool gpu_iss_fault(void);
 uint32_t gpu_iss_num_cores(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -1,4 +1,4 @@
-#include "cycle_difftest.h"
+#include "difftest.h"
 
 #include <algorithm>
 #include <array>
@@ -547,7 +547,7 @@ void pack() {
 }
 } // namespace
 
-// Public hooks used by exec.cc. Input sampling, model stepping, state compare,
+// Public hooks used by rtl.cpp. Input sampling, model stepping, state compare,
 // transaction compare, and PMEM compare deliberately remain separate phases.
 void cycle_diff_init() {
   m = Model{};

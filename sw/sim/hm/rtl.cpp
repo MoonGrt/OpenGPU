@@ -1,14 +1,11 @@
 #include "VGPUTop.h"
-#include <algorithm>
+#include "backend.h"
 #include <common.h>
-#include <cstring>
 #include <device/memory.h>
 #include <gpu.h>
-#include <svdpi.h>
 #include <verilated.h>
 #if defined(CONFIG_DIFFTEST)
-#include "cycle_difftest.h"
-#include <array>
+#include "difftest.h"
 #endif
 
 #if defined(CONFIG_WAVE)
@@ -23,68 +20,10 @@ static bool diff_failed;
 #if defined(CONFIG_DIFFTEST)
 constexpr size_t DiffCoreWords =
     28 + 20 * CONFIG_GPU_NUM_WARPS + 20 * CONFIG_GPU_NUM_WARPS * CONFIG_GPU_NUM_THREADS;
-constexpr size_t DiffStateWords = 23 + CONFIG_GPU_NUM_CORES * DiffCoreWords;
-static std::array<uint32_t, DiffStateWords> rtl_diff_state;
-static std::array<bool, DiffStateWords> rtl_diff_state_valid;
-static bool rtl_diff_state_seen;
 #endif
 #if defined(CONFIG_WAVE)
 static uint64_t sim_time;
 #endif
-
-extern "C" int dpi_paddr_read(int addr) {
-  if (!in_pmem((uint32_t)addr))
-    return 0;
-  return (int)paddr_read((uint32_t)addr, 4);
-}
-
-extern "C" void dpi_paddr_write(int addr, char mask, int data) {
-#if defined(CONFIG_DIFFTEST)
-  (void)addr;
-  (void)mask;
-  (void)data;
-  return;
-#endif
-  for (int byte = 0; byte < 4; ++byte) {
-    if (mask & (1 << byte))
-      paddr_write((uint32_t)addr + byte, 1, ((uint32_t)data >> (8 * byte)) & 0xff);
-  }
-}
-
-extern "C" void gpu_diff_state(int base, const svOpenArrayHandle state) {
-#if defined(CONFIG_DIFFTEST)
-  if (base < 0 || (size_t)base > rtl_diff_state.size()) {
-    diff_failed = true;
-    return;
-  }
-  size_t words = (size_t)svSize(state, 1);
-  if (words > rtl_diff_state.size() - (size_t)base) {
-    diff_failed = true;
-    return;
-  }
-  const void *contiguous_state = svGetArrayPtr(state);
-  if (contiguous_state) {
-    memcpy(rtl_diff_state.data() + base, contiguous_state, words * sizeof(uint32_t));
-  } else {
-    // Keep a portable fallback for simulators that do not expose a contiguous
-    // pointer for an unpacked DPI array.
-    for (size_t word = 0; word < words; ++word) {
-      const void *element = svGetArrElemPtr1(state, (int)word);
-      if (!element) {
-        diff_failed = true;
-        return;
-      }
-      memcpy(&rtl_diff_state[base + word], element, sizeof(rtl_diff_state[word]));
-    }
-  }
-  std::fill_n(rtl_diff_state_valid.begin() + base, words, true);
-  rtl_diff_state_seen = std::all_of(
-      rtl_diff_state_valid.begin(), rtl_diff_state_valid.end(), [](bool valid) { return valid; });
-#else
-  (void)base;
-  (void)state;
-#endif
-}
 
 static void dump_wave(void) {
 #if defined(CONFIG_WAVE)
@@ -96,6 +35,9 @@ static void dump_wave(void) {
 }
 
 static void tick(void) {
+#if defined(CONFIG_DIFFTEST)
+  const uint32_t *rtl_diff_state = dpi_diff_state();
+#endif
   top->clock = 0;
   top->eval();
 #if defined(CONFIG_DIFFTEST)
@@ -120,6 +62,8 @@ static void tick(void) {
   top->eval();
 #if defined(CONFIG_DIFFTEST)
   top->eval();
+  if (dpi_diff_failed())
+    diff_failed = true;
   if (!diff_failed && !cycle_diff_check_stores())
     diff_failed = true;
   const uint32_t *reference = cycle_diff_state();
@@ -159,8 +103,7 @@ extern "C" void rtl_init(int argc, char **argv) {
 #if defined(CONFIG_DIFFTEST)
   cycle_diff_init();
   diff_failed = false;
-  rtl_diff_state_seen = false;
-  rtl_diff_state_valid.fill(false);
+  dpi_diff_reset();
 #endif
 #if defined(CONFIG_WAVE)
   Verilated::traceEverOn(true);
@@ -171,7 +114,7 @@ extern "C" void rtl_init(int argc, char **argv) {
 #endif
   reset();
 #if defined(CONFIG_DIFFTEST)
-  if (!rtl_diff_state_seen) {
+  if (!dpi_diff_state_seen()) {
     fprintf(stderr, "[DIFF] RTL state DPI bridge did not provide a snapshot\n");
     diff_failed = true;
   }

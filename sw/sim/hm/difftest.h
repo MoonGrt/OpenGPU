@@ -1,5 +1,5 @@
-#ifndef OPENGPU_CYCLE_DIFFTEST_H
-#define OPENGPU_CYCLE_DIFFTEST_H
+#ifndef OPENGPU_DIFFTEST_H
+#define OPENGPU_DIFFTEST_H
 
 #include <cstddef>
 #include <cstdint>

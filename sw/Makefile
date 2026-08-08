@@ -29,22 +29,22 @@ VROOT ?= $(shell verilator -V 2>/dev/null | sed -n 's/^[[:space:]]*VERILATOR_ROO
 CC := gcc
 CXX := g++
 AR := ar
-RUNTIME_C_SRCS := runtime/gpu/gpu.c sim/sm/gpu_iss.c runtime/device/memory.c
-RUNTIME_CXX_SRCS := launcher.cpp
+RUNTIME_C_SRCS := runtime/gpu/gpu.c runtime/device/memory.c
+RUNTIME_CXX_SRCS := launcher.cpp sim/model.cpp sim/sm/iss.cpp
 ifeq ($(CONFIG_HM),y)
-RUNTIME_CXX_SRCS += sim/hm/exec.cc
+RUNTIME_CXX_SRCS += sim/hm/dpi.cpp
+RUNTIME_CXX_SRCS += sim/hm/rtl.cpp
 ifeq ($(CONFIG_DIFFTEST),y)
-RUNTIME_CXX_SRCS += sim/hm/cycle_difftest.cc
+RUNTIME_CXX_SRCS += sim/hm/difftest.cpp
 endif
 endif
 INC_PATH := $(OPENGPU_HOME)/sw/include $(OPENGPU_HOME)/sw/runtime \
-            $(OPENGPU_HOME)/sw/runtime/gpu $(OPENGPU_HOME)/sw/sim/sm
-INC_PATH += $(OPENGPU_HOME)/sw/sim/hm
+            $(OPENGPU_HOME)/sw/runtime/gpu $(OPENGPU_HOME)/sw/sim
 VERILATOR_INC_FLAGS :=
 ifeq ($(CONFIG_HM),y)
 VERILATOR_INC_FLAGS := -isystem $(VROOT)/include -isystem $(VROOT)/include/vltstd -I$(VBUILD)
 endif
-HOST_CFLAGS := -MMD -Wall -Werror $(CONFIG_CC_OPT) $(addprefix -I,$(INC_PATH)) $(VERILATOR_INC_FLAGS)
+HOST_CFLAGS := -MMD -MP -Wall -Werror $(CONFIG_CC_OPT) $(addprefix -I,$(INC_PATH)) $(VERILATOR_INC_FLAGS)
 HOST_CXXFLAGS := $(HOST_CFLAGS) -std=c++17
 ifeq ($(CONFIG_WAVE),y)
 HOST_CFLAGS += -DWAVEOUT=\"$(OPENGPU_HOME)/hw/build/wave/$(RUNTIME_VARIANT)\"
@@ -72,7 +72,7 @@ $(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	@$(CXX) $(HOST_CXXFLAGS) -c -o $@ $<
 ifeq ($(CONFIG_HM),y)
-$(OBJ_DIR)/sim/hm/exec.o: check-vlib
+$(OBJ_DIR)/sim/hm/rtl.o $(OBJ_DIR)/sim/hm/dpi.o: check-vlib
 check-vlib:
 	$(MAKE) -C $(OPENGPU_HOME)/hw BACKEND=$(HDL_BACKEND) TOOL=$(TOOL) verilate
 endif

@@ -170,6 +170,29 @@ the owning Top, KMU, and Core modules. Generated Verilator headers for all three
 backends now contain `gpu_diff_state(int base, const svOpenArrayHandle)` and no
 `io_diff_state` member.
 
+## Unified hardware/software model interface
+
+The simulator sources now use a symmetric layout: `sw/sim/model.h` and
+`model.cpp` define the public abstraction and dispatch. The backend
+implementations are named by role: `hm/rtl.cpp` drives Verilated RTL and
+`sm/iss.cpp` implements the functional instruction-set simulator. Each backend
+keeps private declarations in `backend.h`; HM-only DPI and cycle DiffTest code
+remains in `hm/dpi.cpp` and `hm/difftest.{h,cpp}`. Runtime include paths no
+longer expose backend-private directories.
+
+The Runtime now controls both simulation backends through the same opaque
+`gpu_model_t` interface: create, initialize, DCR write, launch, wait, fault,
+and destroy. Backend selection is confined to model creation. Launch metadata
+is always written through the frozen DCR address ABI; the software model keeps
+a DCR mirror and no longer receives grid/block data through
+`gpu_iss_configure()` or the entry PC as a launch argument.
+
+An HM DiffTest run creates both an HM execution-model handle and an SM
+functional-reference handle. This avoids symbol collisions while sending the
+same DCR sequence to both models. The interface is identical, while timing
+semantics remain backend-specific: HM wait advances RTL cycles and SM wait
+advances functional ISS steps.
+
 ## Deviations and remaining work
 
 - The C ISS models launch-global contexts and final functional state, not the
